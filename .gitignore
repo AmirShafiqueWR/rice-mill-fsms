@@ -1,0 +1,65 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+*.pyo
+*.pyd
+.Python
+*.so
+build/
+dist/
+wheels/
+*.egg
+*.egg-info
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment variables (NEVER COMMIT - Contains database passwords)
+.env
+.env.local
+.env.*.local
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+*.cover
+.hypothesis/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Documents (contain sensitive mill data)
+documents/raw/*
+documents/controlled/*
+documents/archive/*
+!documents/raw/.gitkeep
+!documents/controlled/.gitkeep
+!documents/archive/.gitkeep
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Claude specific
+.claude/cache/
