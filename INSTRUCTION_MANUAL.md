@@ -1,791 +1,504 @@
-# Rice Export FSMS - Complete Instruction Manual
+# Rice Export FSMS - Prompt-Based Instruction Manual
 
-## Document Lifecycle: From Upload to Controlled Status
+## Quick Reference: Files & Skills
 
-This manual covers the complete workflow for processing FSMS documents through gap analysis, approval, version control, and task extraction.
-
----
-
-## Prerequisites
-
-### 1. Start the FastAPI Application
-
-```bash
-uv run fastapi dev main.py --port 8000
-```
-
-Verify it's running:
-```bash
-curl http://localhost:8000/health
-```
-
-### 2. Ensure Folder Structure Exists
-
-```bash
-mkdir -p documents/raw documents/controlled documents/archive
-```
+| Step | Skill | Python File | API Endpoint |
+|------|-------|-------------|--------------|
+| Gap Analysis | `/iso-gap-analyzer` | `gap_analyzer.py` | `GET /documents/{id}/gap-analysis` |
+| Document Control | `/doc-controller` | `doc_controller.py` | `PATCH /documents/{id}` |
+| Task Extraction | `/fsms-task-extractor` | `task_extractor.py` | `POST /tasks` |
+| PDF Reading | `/pdf` | - | - |
+| DOCX Reading | `/docx` | - | - |
 
 ---
 
-## Complete Workflow Overview
+## SCENARIO 1: New Document - Complete Workflow
+
+### PROMPT 1.1: Upload & Create Record
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        FSMS DOCUMENT LIFECYCLE                               │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  STEP 1: UPLOAD          STEP 2: ANALYZE         STEP 3: FIX GAPS           │
-│  ┌──────────────┐        ┌──────────────┐        ┌──────────────┐           │
-│  │ Place file   │   →    │ Run Gap      │   →    │ Update       │           │
-│  │ in raw/      │        │ Analysis     │        │ Document     │           │
-│  │ Create DB    │        │ via Skill/   │        │ Fields via   │           │
-│  │ record       │        │ API/Python   │        │ API          │           │
-│  └──────────────┘        └──────────────┘        └──────────────┘           │
-│        │                        │                       │                    │
-│        ▼                        ▼                       ▼                    │
-│  Status: Draft           Gaps Identified          All Fields Complete       │
-│                                                                              │
-│  STEP 4: APPROVE         STEP 5: EXTRACT         STEP 6: OPERATE            │
-│  ┌──────────────┐        ┌──────────────┐        ┌──────────────┐           │
-│  │ Control      │   →    │ Extract      │   →    │ Execute      │           │
-│  │ Document via │        │ Tasks from   │        │ Tasks &      │           │
-│  │ doc-controller│       │ "shall"      │        │ Track        │           │
-│  │ skill        │        │ statements   │        │ Completion   │           │
-│  └──────────────┘        └──────────────┘        └──────────────┘           │
-│        │                        │                       │                    │
-│        ▼                        ▼                       ▼                    │
-│  Status: Controlled      Tasks in Database       Compliance Maintained      │
-│  File in controlled/                                                         │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+I have placed a new document at documents/raw/Rice_Milling_SOP.pdf
+
+Using main.py (FastAPI running on port 8000), create a document record:
+- doc_id: FSMS-SOP-001
+- title: Rice Milling Standard Operating Procedure
+- department: Milling
+- version: v0.1
+- file_path: documents/raw/Rice_Milling_SOP.pdf
+
+Leave prepared_by, approved_by, record_keeper empty for now.
+Use POST /documents endpoint.
 ```
 
----
-
-## STEP 1: Upload Document
-
-### 1.1 Place Physical File
-
-Copy your document (PDF, DOCX) to the raw folder:
-
-```bash
-cp /path/to/your/Rice_Milling_SOP.pdf documents/raw/
-```
-
-### 1.2 Create Database Record
-
-**Option A: Via API (curl)**
-
-```bash
-curl -X POST http://localhost:8000/documents \
-  -H "Content-Type: application/json" \
-  -d '{
-    "doc_id": "FSMS-SOP-001",
-    "title": "Rice Milling Standard Operating Procedure",
-    "department": "Milling",
-    "version": "v0.1",
-    "prepared_by": "",
-    "approved_by": "",
-    "record_keeper": "",
-    "file_path": "documents/raw/Rice_Milling_SOP.pdf"
-  }'
-```
-
-**Option B: Via Python**
-
-```python
-import requests
-
-document = {
-    "doc_id": "FSMS-SOP-001",
-    "title": "Rice Milling Standard Operating Procedure",
-    "department": "Milling",
-    "version": "v0.1",
-    "prepared_by": "",
-    "approved_by": "",
-    "record_keeper": "",
-    "file_path": "documents/raw/Rice_Milling_SOP.pdf"
-}
-
-response = requests.post("http://localhost:8000/documents", json=document)
-print(response.json())
-```
-
-**Option C: Ask Claude**
+### PROMPT 1.2: Run Gap Analysis
 
 ```
-Claude, create a new document record for FSMS-SOP-001 titled "Rice Milling Standard Operating Procedure"
-in the Milling department. The file is at documents/raw/Rice_Milling_SOP.pdf
+Using the /iso-gap-analyzer skill and gap_analyzer.py:
+
+1. Read documents/raw/Rice_Milling_SOP.pdf using /pdf skill
+2. Fetch document record FSMS-SOP-001 from GET /documents endpoint
+3. Run gap analysis using gap_analyzer.py functions:
+   - DocumentClassifier().classify() to determine document type
+   - GapAnalyzer().analyze() to check ISO 22001:2018 compliance
+4. Check these ISO clauses from iso_22001_clauses.py:
+   - Clause 7.5.2: Document creation (prepared_by, approved_by)
+   - Clause 7.5.3: Document control (status, version)
+   - Clause 8.5.1: Hazard control
+5. Return gap report with compliance score and missing fields
 ```
 
----
-
-## STEP 2: Run Gap Analysis
-
-### 2.1 Using the iso-gap-analyzer Skill (Recommended)
-
-**Prompt Claude:**
+### PROMPT 1.3: Fix Gaps - Update Document
 
 ```
-/iso-gap-analyzer FSMS-SOP-001
+Using main.py API (PATCH /documents/{id}), update document FSMS-SOP-001:
 
-Analyze the document at documents/raw/Rice_Milling_SOP.pdf for ISO 22001:2018 compliance gaps.
-Check all required fields and rice mill specific hazards.
-```
-
-**What Claude Will Do:**
-
-1. Read the document using pdf/docx skill
-2. Fetch document record from API
-3. Check ISO 22001:2018 required fields
-4. Identify rice mill hazards (Physical, Chemical, Biological)
-5. Generate compliance score
-6. Return gap report
-
-### 2.2 Using gap_analyzer.py Directly
-
-```python
-from gap_analyzer import GapAnalyzer, DocumentClassifier
-from pdf import extract_text  # Use pdf skill for extraction
-
-# Extract document text
-doc_text = extract_text("documents/raw/Rice_Milling_SOP.pdf")
-
-# Classify document
-classifier = DocumentClassifier()
-doc_type = classifier.classify(doc_text)
-print(f"Document Type: {doc_type}")
-
-# Run gap analysis
-analyzer = GapAnalyzer()
-gaps = analyzer.analyze(
-    doc_text=doc_text,
-    doc_type=doc_type,
-    doc_record={
-        "doc_id": "FSMS-SOP-001",
-        "prepared_by": "",
-        "approved_by": "",
-        "record_keeper": "",
-        "department": "Milling"
-    }
-)
-
-# Print gap report
-print("\n=== GAP ANALYSIS REPORT ===")
-print(f"Compliance Score: {gaps['score']}%")
-print(f"\nMissing Fields:")
-for field in gaps['missing_fields']:
-    print(f"  - {field}")
-print(f"\nRecommendations:")
-for rec in gaps['recommendations']:
-    print(f"  - {rec}")
-```
-
-### 2.3 Using API Endpoint
-
-```bash
-curl http://localhost:8000/documents/1/gap-analysis
-```
-
-### 2.4 Expected Gap Report Output
-
-```
-=== GAP ANALYSIS REPORT ===
-Document: FSMS-SOP-001
-Type: SOP (Standard Operating Procedure)
-Compliance Score: 45%
-
-MISSING REQUIRED FIELDS (ISO 7.5.2):
-  - prepared_by: Not assigned
-  - approved_by: Not assigned
-  - record_keeper: Not assigned
-
-CONTENT GAPS:
-  - No critical limits defined (ISO 8.5.1.2)
-  - Missing monitoring frequencies (ISO 8.5.1.3)
-  - No corrective actions specified (ISO 8.5.1.4)
-
-RICE MILL HAZARDS NOT ADDRESSED:
-  - Physical: Stone, metal fragments, glass
-  - Chemical: Pesticide residue, aflatoxin
-  - Biological: Mold, insects, rodents
-
-RECOMMENDATIONS:
-  1. Assign document ownership (prepared_by, approved_by)
-  2. Define critical limits for moisture (max 14%)
-  3. Add monitoring frequency for each CCP
-  4. Include corrective action procedures
-  5. Address rice mill specific hazards
-```
-
----
-
-## STEP 3: Fix Identified Gaps
-
-### 3.1 Update Document Record via API
-
-**Fix ownership fields:**
-
-```bash
-curl -X PATCH http://localhost:8000/documents/1 \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prepared_by": "Quality Manager - Ahmad Khan",
-    "approved_by": "Plant Director - Dr. Fatima Ali",
-    "record_keeper": "Document Control - Zainab Hassan"
-  }'
-```
-
-### 3.2 Ask Claude to Update
-
-```
-Claude, update document FSMS-SOP-001 with:
-- prepared_by: Quality Manager - Ahmad Khan
-- approved_by: Plant Director - Dr. Fatima Ali
-- record_keeper: Document Control - Zainab Hassan
-```
-
-### 3.3 Update Document Content
-
-If the document content itself needs updates (adding critical limits, monitoring frequencies, etc.):
-
-1. Edit the physical document file
-2. Replace in `documents/raw/`
-3. Re-run gap analysis to verify fixes
-
-```
-Claude, re-run gap analysis on FSMS-SOP-001 to verify all gaps are fixed.
-```
-
-### 3.4 Verify All Gaps Fixed
-
-```bash
-curl http://localhost:8000/documents/1
-```
-
-Expected response shows all fields populated:
-```json
 {
-  "id": 1,
-  "doc_id": "FSMS-SOP-001",
-  "title": "Rice Milling Standard Operating Procedure",
-  "department": "Milling",
-  "version": "v0.1",
-  "status": "Draft",
   "prepared_by": "Quality Manager - Ahmad Khan",
   "approved_by": "Plant Director - Dr. Fatima Ali",
-  "record_keeper": "Document Control - Zainab Hassan",
-  ...
-}
-```
-
----
-
-## STEP 4: Approve and Control Document
-
-### 4.1 Using doc-controller Skill (Recommended)
-
-**Prompt Claude:**
-
-```
-/doc-controller approve FSMS-SOP-001
-
-The document has passed gap analysis. Please:
-1. Verify all prerequisite fields are complete
-2. Move file from raw/ to controlled/
-3. Rename with version: FSMS-SOP-001_v1.0_Rice_Milling_SOP.pdf
-4. Calculate SHA-256 hash for tamper detection
-5. Set file to read-only
-6. Update database status to Controlled
-7. Log to audit trail
-```
-
-### 4.2 Using doc_controller.py Directly
-
-```python
-from doc_controller import DocumentController
-import requests
-
-# Initialize controller
-controller = DocumentController(
-    raw_folder="documents/raw",
-    controlled_folder="documents/controlled",
-    archive_folder="documents/archive"
-)
-
-# Fetch document from API
-response = requests.get("http://localhost:8000/documents/1")
-doc_record = response.json()
-
-# Run prerequisite checks
-checks = controller.validate_prerequisites(doc_record)
-if not checks['passed']:
-    print(f"Cannot approve. Missing: {checks['missing']}")
-    exit(1)
-
-# Approve document
-result = controller.approve_document(
-    doc_record=doc_record,
-    source_file="documents/raw/Rice_Milling_SOP.pdf",
-    new_version="v1.0",
-    change_type="major"  # First approval is always major
-)
-
-print(f"File moved to: {result['file_path']}")
-print(f"File hash: {result['file_hash']}")
-
-# Update database via API
-update_response = requests.patch(
-    f"http://localhost:8000/documents/{doc_record['id']}",
-    json={
-        "status": "Controlled",
-        "version": "v1.0",
-        "approval_date": result['approval_date'],
-        "file_path": result['file_path'],
-        "file_hash": result['file_hash']
-    }
-)
-
-print(f"Database updated: {update_response.json()}")
-```
-
-### 4.3 Using API Only
-
-```bash
-# Update status to Controlled
-curl -X PATCH http://localhost:8000/documents/1 \
-  -H "Content-Type: application/json" \
-  -d '{
-    "status": "Controlled",
-    "version": "v1.0",
-    "approval_date": "2025-01-10T14:30:00Z",
-    "file_path": "documents/controlled/FSMS-SOP-001_v1.0_Rice_Milling_SOP.pdf",
-    "file_hash": "a1b2c3d4e5f6..."
-  }'
-```
-
-### 4.4 What Happens During Approval
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    APPROVAL PROCESS                              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  1. VALIDATE PREREQUISITES                                       │
-│     ✓ prepared_by assigned                                       │
-│     ✓ approved_by assigned                                       │
-│     ✓ record_keeper assigned                                     │
-│     ✓ department assigned                                        │
-│     ✓ status is Draft (not Obsolete)                            │
-│                                                                  │
-│  2. FILE OPERATIONS                                              │
-│     • Calculate SHA-256 hash of source file                     │
-│     • Move: raw/SOP.pdf → controlled/FSMS-SOP-001_v1.0_SOP.pdf │
-│     • Set read-only permissions (chmod 444)                     │
-│                                                                  │
-│  3. DATABASE UPDATE                                              │
-│     • status: Draft → Controlled                                │
-│     • version: v0.1 → v1.0                                      │
-│     • approval_date: current timestamp                          │
-│     • file_path: new controlled path                            │
-│     • file_hash: SHA-256 hash                                   │
-│     • version_hash: record integrity hash                       │
-│                                                                  │
-│  4. AUDIT TRAIL                                                  │
-│     [2025-01-10T14:30:00] APPROVED | FSMS-SOP-001 | v1.0        │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 4.5 Expected Output After Approval
-
-```
-✅ Document Approved Successfully!
-
-Document: FSMS-SOP-001
-Title: Rice Milling Standard Operating Procedure
-Version: v0.1 → v1.0
-Status: Draft → Controlled
-
-File Operations:
-  Source: documents/raw/Rice_Milling_SOP.pdf
-  Destination: documents/controlled/FSMS-SOP-001_v1.0_Rice_Milling_SOP.pdf
-  Hash: a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890
-  Permissions: Read-only (444)
-
-Database Updated:
-  ID: 1
-  Status: Controlled
-  Approval Date: 2025-01-10T14:30:00Z
-
-Audit Log Entry Created.
-```
-
----
-
-## STEP 5: Extract Operational Tasks
-
-### 5.1 Using fsms-task-extractor Skill (Recommended)
-
-**Prompt Claude:**
-
-```
-/fsms-task-extractor FSMS-SOP-001
-
-Extract all operational tasks from the controlled document. Parse "shall" and "must" statements,
-identify actors, actions, frequencies, and critical limits. Create tasks in the database.
-```
-
-### 5.2 Using task_extractor.py Directly
-
-```python
-from task_extractor import TaskExtractor
-from pdf import extract_text
-import requests
-
-# Extract document text
-doc_text = extract_text("documents/controlled/FSMS-SOP-001_v1.0_Rice_Milling_SOP.pdf")
-
-# Initialize extractor
-extractor = TaskExtractor()
-
-# Extract tasks from text
-extracted_tasks = extractor.extract_tasks(doc_text)
-
-print(f"Found {len(extracted_tasks)} tasks")
-
-# Prepare for API
-tasks_payload = {
-    "tasks": [
-        {
-            "document_id": 1,
-            "task_description": task['full_sentence'],
-            "action": task['action'],
-            "object": task['object'],
-            "iso_clause": task['iso_clause'],
-            "critical_limit": task.get('critical_limit'),
-            "frequency": task.get('frequency'),
-            "assigned_department": task['department'],
-            "assigned_role": task['role'],
-            "priority": task['priority'],
-            "source_document_version": "v1.0",
-            "extracted_from_page": task.get('page', 1)
-        }
-        for task in extracted_tasks
-    ]
+  "record_keeper": "Document Control - Zainab Hassan"
 }
 
-# Create tasks via API
-response = requests.post(
-    "http://localhost:8000/tasks",
-    json=tasks_payload
-)
-
-result = response.json()
-print(f"Created {result['created_count']} tasks")
-print(f"Task IDs: {result['task_ids']}")
+Then re-run gap analysis using /iso-gap-analyzer to confirm score is now 100%.
 ```
 
-### 5.3 Using API for Bulk Task Creation
-
-```bash
-curl -X POST http://localhost:8000/tasks \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tasks": [
-      {
-        "document_id": 1,
-        "task_description": "The operator shall check rice moisture content every 4 hours using a calibrated moisture meter.",
-        "action": "check",
-        "object": "rice moisture content",
-        "iso_clause": "8.5.1.3",
-        "critical_limit": "14% max",
-        "frequency": "Every 4 hours",
-        "assigned_department": "Milling",
-        "assigned_role": "Operator",
-        "priority": "Critical",
-        "source_document_version": "v1.0",
-        "extracted_from_page": 3
-      },
-      {
-        "document_id": 1,
-        "task_description": "The quality inspector shall verify paddy intake temperature is below 35°C before processing.",
-        "action": "verify",
-        "object": "paddy intake temperature",
-        "iso_clause": "8.5.1.2",
-        "critical_limit": "<35°C",
-        "frequency": "Per batch",
-        "assigned_department": "Quality",
-        "assigned_role": "Inspector",
-        "priority": "Critical",
-        "source_document_version": "v1.0",
-        "extracted_from_page": 2
-      }
-    ]
-  }'
-```
-
-### 5.4 Expected Task Extraction Output
+### PROMPT 1.4: Approve Document
 
 ```
-=== TASK EXTRACTION REPORT ===
-Document: FSMS-SOP-001 v1.0
-Source: documents/controlled/FSMS-SOP-001_v1.0_Rice_Milling_SOP.pdf
+Using the /doc-controller skill and doc_controller.py:
 
-Extracted 12 tasks from 7 "shall" statements and 5 "must" statements
+1. Fetch document FSMS-SOP-001 from API
+2. Run validate_prerequisites() from doc_controller.py to check:
+   - prepared_by is not empty
+   - approved_by is not empty
+   - record_keeper is not empty
+   - status is "Draft" (not "Obsolete")
+3. If validation passes:
+   - Calculate SHA-256 hash using Document.compute_file_hash() from models.py
+   - Move file: documents/raw/Rice_Milling_SOP.pdf → documents/controlled/FSMS-SOP-001_v1.0_Rice_Milling_SOP.pdf
+   - Set read-only permissions
+4. Update database via PATCH /documents/{id}:
+   - status: "Controlled"
+   - version: "v1.0"
+   - approval_date: current timestamp
+   - file_path: new controlled path
+   - file_hash: computed SHA-256
+5. Log to audit_log.txt
+6. Return approval confirmation
+```
 
-TASKS BY DEPARTMENT:
-┌────────────┬───────┬──────────┬──────┬────────┬─────┐
-│ Department │ Total │ Critical │ High │ Medium │ Low │
-├────────────┼───────┼──────────┼──────┼────────┼─────┤
-│ Milling    │ 6     │ 2        │ 3    │ 1      │ 0   │
-│ Quality    │ 4     │ 2        │ 1    │ 1      │ 0   │
-│ Storage    │ 2     │ 0        │ 1    │ 1      │ 0   │
-└────────────┴───────┴──────────┴──────┴────────┴─────┘
+### PROMPT 1.5: Extract Tasks
 
-TASKS BY ISO CLAUSE:
-  • 8.5.1.2 (Critical Limits): 4 tasks
-  • 8.5.1.3 (Monitoring): 5 tasks
-  • 8.5.1.4 (Corrective Action): 2 tasks
-  • 7.5.3 (Records): 1 task
+```
+Using the /fsms-task-extractor skill and task_extractor.py:
 
-SAMPLE EXTRACTED TASKS:
-┌────┬─────────────────────────────────────────┬───────────┬──────────────┬──────────┐
-│ ID │ Task Description                        │ Frequency │ Critical Lim │ Priority │
-├────┼─────────────────────────────────────────┼───────────┼──────────────┼──────────┤
-│ 1  │ Check rice moisture content             │ Every 4hr │ 14% max      │ Critical │
-│ 2  │ Verify paddy intake temperature         │ Per batch │ <35°C        │ Critical │
-│ 3  │ Inspect for foreign material            │ Per shift │ Zero defect  │ High     │
-│ 4  │ Calibrate moisture meter                │ Weekly    │ ±0.5%        │ High     │
-│ 5  │ Record milling parameters               │ Per batch │ -            │ Medium   │
-└────┴─────────────────────────────────────────┴───────────┴──────────────┴──────────┘
-
-All 12 tasks saved to database.
-Document ID: 1
-Task IDs: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+1. Read documents/controlled/FSMS-SOP-001_v1.0_Rice_Milling_SOP.pdf using /pdf skill
+2. Use TaskExtractor class from task_extractor.py to:
+   - Find all sentences containing "shall", "must", "is required to", "responsible for"
+   - Parse each sentence to extract:
+     - actor (who)
+     - action (verb)
+     - object (what)
+     - frequency (how often)
+     - critical_limit (threshold values like "14%", "<35°C")
+3. Map each task using mappings from task_extractor.py:
+   - Actor → Department (e.g., "operator" → "Milling")
+   - Actor → Role (e.g., "operator" → "Operator")
+   - Keywords → ISO clause (e.g., "monitor" → "8.5.1.3")
+   - Conditions → Priority (e.g., has critical_limit → "Critical")
+4. Create tasks via POST /tasks endpoint from main.py
+5. Return extraction report with task count by department and priority
 ```
 
 ---
 
-## STEP 6: Version Management (Updates)
+## SCENARIO 2: Gap Analysis Only (No Approval)
 
-### 6.1 Minor Update (Typo Fix, Formatting)
-
-When a controlled document needs minor corrections:
-
-**Prompt Claude:**
+### PROMPT 2.1: Quick Gap Check
 
 ```
-/doc-controller update FSMS-SOP-001 minor
+Using /iso-gap-analyzer skill with gap_analyzer.py and iso_22001_clauses.py:
 
-The document has a typo fix. Please:
-1. Increment version from v1.0 to v1.1
-2. Archive old version
-3. Move new file to controlled/
-4. Update database
-```
+Analyze documents/raw/New_Procedure.pdf for ISO 22001:2018 gaps WITHOUT creating a database record.
 
-**What Happens:**
-
-```
-Version Change: v1.0 → v1.1 (Minor)
-Old File: FSMS-SOP-001_v1.0_... → archive/FSMS-SOP-001_v1.0_ARCHIVED_20250110.pdf
-New File: FSMS-SOP-001_v1.1_Rice_Milling_SOP.pdf
-Tasks: Unchanged (no re-extraction needed)
-```
-
-### 6.2 Major Update (Process Change, New CCPs)
-
-When a controlled document has substantive changes:
-
-**Prompt Claude:**
-
-```
-/doc-controller update FSMS-SOP-001 major
-
-The document has significant process changes. Please:
-1. Increment version from v1.1 to v2.0
-2. Archive old version
-3. Move new file to controlled/
-4. Update database
-5. Re-extract tasks (process changed)
-```
-
-**What Happens:**
-
-```
-Version Change: v1.1 → v2.0 (Major)
-Old File: FSMS-SOP-001_v1.1_... → archive/FSMS-SOP-001_v1.1_ARCHIVED_20250110.pdf
-New File: FSMS-SOP-001_v2.0_Rice_Milling_SOP.pdf
-Tasks: Old tasks marked obsolete, new tasks extracted
+1. Use /pdf skill to extract text
+2. Use DocumentClassifier from gap_analyzer.py to classify as:
+   - POLICY (contains "policy", "commitment")
+   - SOP (contains "procedure", "shall", step-by-step)
+   - PROCESS_FLOW (contains "flowchart", "diagram")
+   - RECORD (contains "log", "checklist", "form")
+3. Check required fields per document type from iso_22001_clauses.py
+4. Check for rice mill hazards:
+   - Physical: stones, metal, glass
+   - Chemical: pesticides, aflatoxin, fumigants
+   - Biological: mold, insects, rodents
+5. Return gap report with:
+   - Document type classification
+   - Compliance score (0-100%)
+   - Missing required elements
+   - Recommendations to fix gaps
 ```
 
 ---
 
-## Complete Prompt Examples for Claude
+## SCENARIO 3: Document Version Update
 
-### Example 1: New Document - Full Workflow
-
-```
-I have uploaded a new SOP to documents/raw/Paddy_Receiving_SOP.pdf
-
-Please:
-1. Create a document record with doc_id FSMS-SOP-002, title "Paddy Receiving Procedure", department "Storage"
-2. Run gap analysis using /iso-gap-analyzer
-3. Tell me what fields are missing so I can provide them
-```
-
-After providing missing info:
+### PROMPT 3.1: Minor Update (Typo Fix)
 
 ```
-Update FSMS-SOP-002 with:
-- prepared_by: Storage Supervisor - Ali Raza
-- approved_by: Quality Director - Dr. Hassan Malik
-- record_keeper: Document Control - Ayesha Bibi
+Using /doc-controller skill with doc_controller.py:
 
-Then run gap analysis again to confirm all gaps are fixed.
+Document FSMS-SOP-001 (currently v1.0, Controlled) has a typo fix.
+New file is at documents/raw/Rice_Milling_SOP_v1.1.pdf
+
+This is a MINOR change. Please:
+
+1. Use VersionInfo class from doc_controller.py to increment: v1.0 → v1.1
+2. Archive current controlled file:
+   - Move documents/controlled/FSMS-SOP-001_v1.0_...
+   - To documents/archive/FSMS-SOP-001_v1.0_ARCHIVED_20250110.pdf
+3. Process new file:
+   - Compute SHA-256 hash
+   - Move to documents/controlled/FSMS-SOP-001_v1.1_Rice_Milling_SOP.pdf
+   - Set read-only
+4. Update database via PATCH /documents/{id}:
+   - version: "v1.1"
+   - file_path: new path
+   - file_hash: new hash
+   - updated_at: current timestamp
+5. Log version change to audit_log.txt
+6. DO NOT re-extract tasks (minor change)
 ```
 
-After confirmation:
+### PROMPT 3.2: Major Update (Process Change)
 
 ```
-/doc-controller approve FSMS-SOP-002
+Using /doc-controller skill with doc_controller.py and /fsms-task-extractor skill:
 
-All gaps are fixed. Please approve the document as v1.0 and move to controlled status.
-```
+Document FSMS-SOP-001 (currently v1.1, Controlled) has MAJOR process changes.
+New file is at documents/raw/Rice_Milling_SOP_v2.pdf
 
-After approval:
+This is a MAJOR change (new CCPs, changed critical limits). Please:
 
-```
-/fsms-task-extractor FSMS-SOP-002
-
-Extract all operational tasks from the approved document and save to database.
-```
-
-### Example 2: Update Existing Document
-
-```
-I have updated the Rice Milling SOP with new critical limits for moisture content.
-The updated file is at documents/raw/Rice_Milling_SOP_updated.pdf
-
-This is a MAJOR change because critical limits changed.
-
-Please:
-1. Run gap analysis on the new version
-2. If gaps are fixed, approve as v2.0 (major update)
-3. Archive the old v1.0 version
-4. Re-extract tasks since process changed
-```
-
-### Example 3: Quick Gap Check Only
-
-```
-/iso-gap-analyzer
-
-Analyze documents/raw/New_Cleaning_Procedure.pdf without creating a database record.
-Just tell me what ISO 22001:2018 gaps exist so I know what to fix before formal submission.
+1. Use VersionInfo from doc_controller.py to increment: v1.1 → v2.0
+2. Archive current version to documents/archive/
+3. Run gap analysis on new file using gap_analyzer.py
+4. If gaps are fixed:
+   - Compute new hash using models.py Document.compute_file_hash()
+   - Move to documents/controlled/FSMS-SOP-001_v2.0_Rice_Milling_SOP.pdf
+5. Update database via PATCH /documents/{id}:
+   - version: "v2.0"
+   - file_path, file_hash, updated_at
+6. Mark old tasks as obsolete or delete them
+7. Re-extract tasks using task_extractor.py TaskExtractor class
+8. Create new tasks via POST /tasks
+9. Return version update report and new task count
 ```
 
 ---
 
-## API Quick Reference
+## SCENARIO 4: View & Query Data
 
-### Documents
+### PROMPT 4.1: List All Controlled Documents
 
-| Action | Method | Endpoint | Body |
-|--------|--------|----------|------|
-| Create | POST | `/documents` | `{doc_id, title, department, version, ...}` |
-| List | GET | `/documents` | - |
-| Get One | GET | `/documents/{id}` | - |
-| Update | PATCH | `/documents/{id}` | `{status, version, ...}` |
-| Delete | DELETE | `/documents/{id}` | - |
-| With Tasks | GET | `/documents/{id}/tasks` | - |
+```
+Using main.py API, query all controlled documents:
 
-### Tasks
-
-| Action | Method | Endpoint | Body |
-|--------|--------|----------|------|
-| Bulk Create | POST | `/tasks` | `{tasks: [...]}` |
-| List | GET | `/tasks` | - |
-| Get One | GET | `/tasks/{id}` | - |
-| Update | PATCH | `/tasks/{id}` | `{status, priority, ...}` |
-
-### Filters
-
-```bash
-# Documents by department
-GET /documents?department=Milling
-
-# Documents by status
 GET /documents?status=Controlled
 
-# Tasks by priority
+Return a table showing:
+- doc_id
+- title
+- department
+- version
+- approval_date
+```
+
+### PROMPT 4.2: Get Document with Tasks
+
+```
+Using main.py API, get document FSMS-SOP-001 with all its tasks:
+
+GET /documents/1/tasks
+
+Return:
+- Document details (doc_id, title, version, status)
+- List of tasks with:
+  - task_description
+  - frequency
+  - critical_limit
+  - priority
+  - assigned_department
+```
+
+### PROMPT 4.3: Filter Tasks by Priority
+
+```
+Using main.py API, get all Critical priority tasks:
+
 GET /tasks?priority=Critical
 
-# Tasks by document
-GET /tasks?document_id=1
+Return tasks grouped by department showing:
+- task_description
+- document doc_id
+- frequency
+- critical_limit
 ```
 
 ---
 
-## Troubleshooting
+## SCENARIO 5: Database Operations
 
-### Gap Analysis Shows Missing Fields After Update
-
-```bash
-# Verify the update was saved
-curl http://localhost:8000/documents/1
-
-# Check if field is empty string vs null
-# Empty string "" still counts as missing
-```
-
-### Document Won't Approve
+### PROMPT 5.1: Verify Database Tables
 
 ```
-Possible causes:
-1. Missing required field (prepared_by, approved_by, record_keeper)
-2. Status is already Obsolete (cannot approve Obsolete documents)
-3. File not found in raw/ folder
+Using database.py and models.py:
 
-Fix: Check gap analysis report and ensure all fields are populated
+1. Call health_check() from database.py to verify connection
+2. Use create_tables() to ensure tables exist
+3. Query document and task tables to show:
+   - Total document count
+   - Documents by status (Draft, Controlled, Obsolete)
+   - Total task count
+   - Tasks by priority
 ```
 
-### Tasks Not Extracting
+### PROMPT 5.2: Check Document Integrity
 
 ```
-Possible causes:
-1. Document has no "shall" or "must" statements
-2. Document is not in Controlled status
-3. PDF text extraction failed
+Using models.py Document class:
 
-Fix:
-- Verify document contains mandatory statements
-- Use /pdf skill to test text extraction
-- Ensure document status is Controlled before extraction
-```
-
-### Version Hash Mismatch
-
-```
-This indicates potential tampering. The stored hash doesn't match computed hash.
-
-Check:
-1. File was modified after approval
-2. Database record was manually edited
-
-Resolution: Re-approve document to regenerate hashes
+For document FSMS-SOP-001:
+1. Fetch from database
+2. Recompute version_hash using compute_version_hash()
+3. Compare with stored version_hash
+4. Recompute file_hash using compute_file_hash() on the actual file
+5. Compare with stored file_hash
+6. Report if any hash mismatch (indicates tampering)
 ```
 
 ---
 
-## Skill Reference Card
+## SCENARIO 6: Bulk Operations
 
-| Skill | Trigger | What It Does |
-|-------|---------|--------------|
-| `/iso-gap-analyzer {doc_id}` | Gap analysis request | Analyzes document for ISO 22001:2018 compliance |
-| `/doc-controller approve {doc_id}` | Approval request | Validates, moves file, updates database |
-| `/doc-controller update {doc_id} minor\|major` | Version update | Archives old, creates new version |
-| `/fsms-task-extractor {doc_id}` | Task extraction | Parses "shall" statements, creates tasks |
-| `/pdf {file}` | PDF reading | Extracts text from PDF documents |
-| `/docx {file}` | DOCX reading | Extracts text from Word documents |
+### PROMPT 6.1: Bulk Task Creation
+
+```
+Using main.py API and task_extractor.py:
+
+I have these tasks to create for document ID 1:
+
+1. "Operator shall check moisture every 4 hours" - Critical
+2. "Inspector shall verify temperature per batch" - Critical
+3. "Technician shall calibrate meters weekly" - High
+
+Use TaskExtractor from task_extractor.py to parse each sentence, then:
+
+POST /tasks with bulk payload:
+{
+  "tasks": [
+    {
+      "document_id": 1,
+      "task_description": "...",
+      "action": "...",
+      "object": "...",
+      "iso_clause": "...",
+      "frequency": "...",
+      "critical_limit": "...",
+      "assigned_department": "...",
+      "assigned_role": "...",
+      "priority": "...",
+      "source_document_version": "v1.0"
+    },
+    ...
+  ]
+}
+```
+
+---
+
+## SCENARIO 7: Troubleshooting
+
+### PROMPT 7.1: Debug Gap Analysis
+
+```
+Using gap_analyzer.py and iso_22001_clauses.py:
+
+Gap analysis for FSMS-SOP-001 shows 60% compliance but I've filled all fields.
+
+Debug by:
+1. Fetch document from GET /documents/{id}
+2. Print all field values
+3. Check each against REQUIRED_FIELDS in iso_22001_clauses.py
+4. Identify which fields are empty string "" vs proper values
+5. Check if document content has required elements using GapAnalyzer
+6. Show exactly what's missing and why score isn't 100%
+```
+
+### PROMPT 7.2: Debug Task Extraction
+
+```
+Using task_extractor.py:
+
+Task extraction found 0 tasks in FSMS-SOP-001.
+
+Debug by:
+1. Read document using /pdf skill, show first 500 characters
+2. Search for "shall", "must", "required" in text
+3. If found, show the full sentences
+4. Run TaskExtractor.extract_mandatory_sentences() and show results
+5. If not found, report that document lacks mandatory statements
+```
+
+### PROMPT 7.3: Fix Status Transition Error
+
+```
+Using models.py STATUS_TRANSITIONS:
+
+Cannot change document status from "Controlled" to "Draft".
+
+Explain using STATUS_TRANSITIONS dict from models.py:
+- Draft → Controlled (allowed)
+- Controlled → Obsolete (allowed)
+- Obsolete → nothing (terminal state)
+
+Status transitions are ONE-WAY only per ISO 7.5.3.
+To "revert", create a new document version instead.
+```
+
+---
+
+## Complete Single Prompts
+
+### PROMPT A: Full Workflow in One Request
+
+```
+I uploaded documents/raw/Paddy_Storage_SOP.pdf
+
+Please complete the full FSMS workflow:
+
+1. CREATE RECORD (main.py POST /documents):
+   - doc_id: FSMS-SOP-003
+   - title: Paddy Storage Procedure
+   - department: Storage
+   - version: v0.1
+   - prepared_by: Storage Manager - Imran Ali
+   - approved_by: Plant Director - Dr. Fatima Ali
+   - record_keeper: Document Control - Zainab Hassan
+
+2. GAP ANALYSIS (/iso-gap-analyzer skill, gap_analyzer.py):
+   - Read PDF using /pdf skill
+   - Classify document type
+   - Check ISO 22001:2018 compliance
+   - Report any gaps
+
+3. IF NO GAPS - APPROVE (/doc-controller skill, doc_controller.py):
+   - Validate prerequisites
+   - Compute SHA-256 hash (models.py)
+   - Move to documents/controlled/FSMS-SOP-003_v1.0_Paddy_Storage_SOP.pdf
+   - Update database: status=Controlled, version=v1.0
+   - Log to audit trail
+
+4. EXTRACT TASKS (/fsms-task-extractor skill, task_extractor.py):
+   - Parse "shall"/"must" statements
+   - Map to departments and ISO clauses
+   - Assign priorities
+   - Create via POST /tasks
+
+5. REPORT:
+   - Document status
+   - Compliance score
+   - Number of tasks extracted by department
+   - Task IDs created
+```
+
+### PROMPT B: Quick Status Check
+
+```
+Using main.py API and database.py:
+
+Give me a status report:
+
+1. GET /health - Database connection status
+2. GET /documents - Count by status (Draft/Controlled/Obsolete)
+3. GET /tasks - Count by priority (Critical/High/Medium/Low)
+4. List any documents in Draft status that need attention
+5. List Critical tasks that are Pending
+```
+
+### PROMPT C: Document Audit
+
+```
+Using models.py, doc_controller.py, and main.py API:
+
+Audit document FSMS-SOP-001:
+
+1. Fetch document record from API
+2. Verify file exists at file_path
+3. Recompute file_hash and compare with stored hash
+4. Recompute version_hash and compare with stored hash
+5. Check audit_log.txt for all entries related to this document
+6. List all tasks linked to this document
+7. Report:
+   - File integrity: PASS/FAIL
+   - Record integrity: PASS/FAIL
+   - Task count
+   - Last modified date
+   - Version history
+```
+
+---
+
+## Python File Reference
+
+| File | Classes/Functions | Purpose |
+|------|-------------------|---------|
+| `models.py` | `Document`, `Task` | SQLModel database models |
+| `models.py` | `VALID_DEPARTMENTS` | ["Milling", "Quality", "Exports", "Packaging", "Storage"] |
+| `models.py` | `STATUS_TRANSITIONS` | Draft→Controlled→Obsolete |
+| `models.py` | `Document.compute_file_hash()` | SHA-256 of file |
+| `models.py` | `Document.compute_version_hash()` | SHA-256 of record |
+| `database.py` | `get_session()` | Database session context manager |
+| `database.py` | `health_check()` | Verify DB connection |
+| `database.py` | `create_tables()` | Create document/task tables |
+| `gap_analyzer.py` | `DocumentClassifier` | Classify doc type (Policy/SOP/etc) |
+| `gap_analyzer.py` | `GapAnalyzer` | ISO 22001:2018 compliance check |
+| `iso_22001_clauses.py` | `ISO_CLAUSES` | Clause definitions and requirements |
+| `iso_22001_clauses.py` | `RICE_MILL_HAZARDS` | Physical/Chemical/Biological hazards |
+| `doc_controller.py` | `DocumentController` | File operations, versioning |
+| `doc_controller.py` | `VersionInfo` | Parse/increment versions |
+| `doc_controller.py` | `validate_prerequisites()` | Check required fields |
+| `task_extractor.py` | `TaskExtractor` | Parse "shall" statements |
+| `task_extractor.py` | `ACTOR_DEPARTMENT_MAP` | Actor→Department mapping |
+| `task_extractor.py` | `ISO_CLAUSE_MAP` | Keywords→ISO clause mapping |
+| `main.py` | FastAPI app | All REST API endpoints |
+
+---
+
+## Skill Reference
+
+| Skill | When to Use | What It Calls |
+|-------|-------------|---------------|
+| `/iso-gap-analyzer` | Check document compliance | `gap_analyzer.py`, `iso_22001_clauses.py` |
+| `/doc-controller` | Approve/version documents | `doc_controller.py`, `models.py` |
+| `/fsms-task-extractor` | Extract tasks from SOPs | `task_extractor.py`, `main.py` API |
+| `/pdf` | Read PDF files | External PDF extraction |
+| `/docx` | Read Word files | External DOCX extraction |
+
+---
+
+## API Endpoint Reference
+
+| Endpoint | Method | Python Handler | Purpose |
+|----------|--------|----------------|---------|
+| `/health` | GET | `main.py:health_check()` | DB status |
+| `/documents` | GET | `main.py:list_documents()` | List all docs |
+| `/documents` | POST | `main.py:create_document()` | Create doc |
+| `/documents/{id}` | GET | `main.py:get_document()` | Get one doc |
+| `/documents/{id}` | PATCH | `main.py:update_document()` | Update doc |
+| `/documents/{id}` | DELETE | `main.py:delete_document()` | Soft delete |
+| `/documents/{id}/tasks` | GET | `main.py:get_document_with_tasks()` | Doc + tasks |
+| `/tasks` | GET | `main.py:list_tasks()` | List tasks |
+| `/tasks` | POST | `main.py:create_tasks()` | Bulk create |
+| `/tasks/{id}` | GET | `main.py:get_task()` | Get one task |
+| `/tasks/{id}` | PATCH | `main.py:update_task()` | Update task |
+| `/audit-trail/{id}` | GET | `main.py:get_audit_trail()` | Version history |
