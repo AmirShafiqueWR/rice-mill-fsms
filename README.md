@@ -21,3 +21,18 @@ A collection of hands-on skills for students to explore and practice when learni
 | **skill-validator** | Validate any skill against production-level quality criteria. 7 weighted criteria, 0-100 scoring, actionable feedback with prioritized recommendations |
 | **theme-factory** | Toolkit for styling artifacts (slides, docs, reports, HTML) with 10 pre-set professional themes or custom on-the-fly theme generation |
 | **xlsx** | Comprehensive spreadsheet creation, editing, and analysis with support for formulas, formatting, data analysis, and visualization |
+
+## Rice Export FSMS Skills
+
+Custom skills for ISO 22001:2018 Food Safety Management System compliance in rice mill operations.
+
+| Skill | Purpose |
+|-------|---------|
+| **sqlmodel-architect** | SQLModel database architecture for Rice Export FSMS with ISO 22001:2018 compliance. Creates Document and Task models with Neon Postgres connection |
+| **fastapi-route-wizard** | FastAPI route generation with async endpoints, Pydantic validation, and OpenAPI docs for the food safety management system |
+| **pytest-inspector** | Pytest test generation with async support, fixtures, and coverage for SQLModel models and FastAPI endpoints |
+| **iso-gap-analyzer** | ISO 22001:2018 gap analysis for FSMS documents. Classifies documents, audits against ISO clauses, checks rice mill hazards |
+| **doc-controller** | Document gatekeeper implementing ISO 22001:2018 Clause 7.5.3. Manages document state transitions, version control, and Master Document Register |
+| **fsms-task-extractor** | Extracts operational tasks from controlled documents by parsing "shall" statements and converting to database tasks with ISO clause mapping |
+
+**User Guide:** See [USER_GUIDE.md](./USER_GUIDE.md) for complete usage instructions.
