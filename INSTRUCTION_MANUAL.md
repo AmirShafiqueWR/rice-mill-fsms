@@ -92,7 +92,14 @@ Using the /doc-controller skill and doc_controller.py:
 Using the /fsms-task-extractor skill and task_extractor.py:
 
 1. Read documents/controlled/FSMS-SOP-001_v1.0_Rice_Milling_SOP.pdf using /pdf skill
-2. Use TaskExtractor class from task_extractor.py to:
+
+2. First, analyze document context using analyze_document_context(text):
+   - Detect document type (SOP, Policy, etc.)
+   - Identify primary department from content
+   - Find all actors mentioned
+   - List unmapped actors (not in task_extractor_config.json)
+
+3. Use extract_tasks_from_text(text, config) to:
    - Find all sentences containing "shall", "must", "is required to", "responsible for"
    - Parse each sentence to extract:
      - actor (who)
@@ -100,13 +107,21 @@ Using the /fsms-task-extractor skill and task_extractor.py:
      - object (what)
      - frequency (how often)
      - critical_limit (threshold values like "14%", "<35°C")
-3. Map each task using mappings from task_extractor.py:
-   - Actor → Department (e.g., "operator" → "Milling")
-   - Actor → Role (e.g., "operator" → "Operator")
-   - Keywords → ISO clause (e.g., "monitor" → "8.5.1.3")
-   - Conditions → Priority (e.g., has critical_limit → "Critical")
-4. Create tasks via POST /tasks endpoint from main.py
-5. Return extraction report with task count by department and priority
+
+4. Map each task using ExtractorConfig (from task_extractor_config.json or defaults):
+   - If actor is in config → Use mapped Department/Role (100% confidence)
+   - If actor NOT in config → Infer from keywords (70% confidence, marked [INFERRED])
+   - If still no match → Use document's primary department as fallback
+
+5. For unmapped actors, call suggest_actor_mappings(context) to get suggestions
+
+6. Create tasks via POST /tasks endpoint from main.py
+
+7. Return ExtractionResult showing:
+   - Task count by department and priority
+   - detected_actors: All actors found in document
+   - suggested_mappings: Recommendations for unmapped actors
+   - Number of inferred vs mapped tasks
 ```
 
 ---
@@ -367,6 +382,147 @@ To "revert", create a new document version instead.
 
 ---
 
+## SCENARIO 8: Configurable Task Extraction (SOP-Dependent)
+
+The task_extractor.py now adapts to each SOP's content instead of using only hardcoded mappings.
+
+### PROMPT 8.1: Preview Extraction Before Saving
+
+```
+Using task_extractor.py preview_extraction():
+
+I have a new SOP at documents/controlled/FSMS-SOP-005_v1.0_Fumigation.pdf
+
+Before extracting tasks to database, preview what will be extracted:
+
+1. Read PDF using /pdf skill
+2. Call preview_extraction(text) from task_extractor.py
+3. Show me:
+   - Document context (type, primary department)
+   - All actors found in document
+   - Unmapped actors (not in config)
+   - Each extracted task with:
+     - Sentence
+     - Actor → Department/Role mapping
+     - Confidence score (100% = mapped, 70% = inferred)
+     - [INFERRED] marker if department was guessed
+   - Suggested mappings for unmapped actors
+
+DO NOT save to database yet. Just preview.
+```
+
+### PROMPT 8.2: Add Custom Actor Mappings
+
+```
+Using task_extractor.py ExtractorConfig:
+
+The SOP uses actors not in the default mapping:
+- "fumigation specialist" should map to Milling/Fumigation Specialist
+- "rice grader" should map to Quality/Rice Grader
+- "export coordinator" should map to Exports/Coordinator
+
+1. Load config: ExtractorConfig.from_json("task_extractor_config.json")
+2. Add mappings:
+   config.add_actor_mapping("fumigation specialist", "Milling", "Fumigation Specialist")
+   config.add_actor_mapping("rice grader", "Quality", "Rice Grader")
+   config.add_actor_mapping("export coordinator", "Exports", "Coordinator")
+3. Save config: config.to_json("task_extractor_config.json")
+4. Re-run extraction with updated config
+```
+
+### PROMPT 8.3: Analyze Document Context
+
+```
+Using task_extractor.py analyze_document_context():
+
+Analyze documents/raw/New_SOP.pdf to understand its context before extraction:
+
+1. Read PDF using /pdf skill
+2. Call analyze_document_context(text) from task_extractor.py
+3. Return DocumentContext showing:
+   - document_type: Policy/SOP/Process Flow/Record
+   - primary_department: Most mentioned department
+   - mentioned_departments: All departments referenced
+   - unique_actors: All actors found (who "shall" do things)
+   - unmapped_actors: Actors not in config
+   - has_ccps: Whether document mentions CCPs
+   - has_critical_limits: Whether document has threshold values
+
+This helps understand what mappings might be needed before extraction.
+```
+
+### PROMPT 8.4: Extract with Auto-Added Mappings
+
+```
+Using task_extractor.py extract_and_create_tasks() with auto_add_mappings=True:
+
+Extract tasks from FSMS-SOP-005 and automatically use suggested mappings for unmapped actors:
+
+1. Read document using /pdf skill
+2. Call extract_and_create_tasks(
+     doc_id="FSMS-SOP-005",
+     text=pdf_text,
+     auto_add_mappings=True  # Auto-use suggestions
+   )
+3. This will:
+   - Analyze document context
+   - Find unmapped actors
+   - Generate suggested mappings
+   - Re-extract with suggestions applied
+   - Create tasks in database
+4. Return ExtractionResult showing:
+   - Total tasks created
+   - Tasks by department
+   - detected_actors: All actors found
+   - suggested_mappings: What was auto-applied
+   - How many had inferred mappings
+```
+
+### PROMPT 8.5: Edit Configuration File Directly
+
+```
+The task_extractor_config.json file controls all mappings.
+
+Show me the current config file and explain how to customize it:
+
+1. Read task_extractor_config.json
+2. Explain each section:
+   - actor_department_map: {"actor": ["Department", "Role"]}
+   - iso_clause_keywords: {"clause": ["keyword1", "keyword2"]}
+   - priority_keywords: {"Critical": ["keyword1"], "High": [...]}
+   - default_department: Fallback when no match
+   - default_role: Fallback role
+3. Show example of adding:
+   - New actor mapping for this rice mill's specific roles
+   - New ISO clause keywords
+   - New priority keywords
+```
+
+### PROMPT 8.6: Handle Inferred Mappings in Report
+
+```
+Using task_extractor.py generate_extraction_report():
+
+After extraction, some tasks show [INFERRED] with 70% confidence.
+
+1. Generate extraction report using generate_extraction_report(result)
+2. For each inferred mapping, the report will show:
+
+   "Note: Some actors were not in the mapping config.
+   Suggested mappings (add to task_extractor_config.json):
+     "lab analyst": ["Quality", "Lab Technician"]
+     "fumigation team": ["Milling", "Fumigation Team"]"
+
+3. Review suggestions and decide:
+   - Accept suggestion → Add to config file
+   - Modify suggestion → Edit department/role
+   - Reject → Leave as inferred
+
+4. If accepting, update config and re-extract for 100% confidence
+```
+
+---
+
 ## Complete Single Prompts
 
 ### PROMPT A: Full Workflow in One Request
@@ -467,9 +623,13 @@ Audit document FSMS-SOP-001:
 | `doc_controller.py` | `DocumentController` | File operations, versioning |
 | `doc_controller.py` | `VersionInfo` | Parse/increment versions |
 | `doc_controller.py` | `validate_prerequisites()` | Check required fields |
-| `task_extractor.py` | `TaskExtractor` | Parse "shall" statements |
-| `task_extractor.py` | `ACTOR_DEPARTMENT_MAP` | Actor→Department mapping |
-| `task_extractor.py` | `ISO_CLAUSE_MAP` | Keywords→ISO clause mapping |
+| `task_extractor.py` | `ExtractorConfig` | Configurable mappings (load from JSON or pass custom) |
+| `task_extractor.py` | `DocumentContext` | Context analysis for smart mapping |
+| `task_extractor.py` | `analyze_document_context()` | Detect doc type, primary dept, actors |
+| `task_extractor.py` | `extract_tasks_from_text()` | Main extraction with context awareness |
+| `task_extractor.py` | `preview_extraction()` | Preview tasks without saving to DB |
+| `task_extractor.py` | `suggest_actor_mappings()` | Auto-suggest mappings for unmapped actors |
+| `task_extractor_config.json` | JSON config | Customize actor→dept mappings |
 | `main.py` | FastAPI app | All REST API endpoints |
 
 ---

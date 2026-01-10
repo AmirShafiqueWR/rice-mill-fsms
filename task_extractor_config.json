@@ -1,0 +1,242 @@
+{
+  "actor_department_map": {
+    "miller": [
+      "Milling",
+      "Operator"
+    ],
+    "operator": [
+      "Milling",
+      "Operator"
+    ],
+    "machine operator": [
+      "Milling",
+      "Machine Operator"
+    ],
+    "milling supervisor": [
+      "Milling",
+      "Shift Supervisor"
+    ],
+    "milling team": [
+      "Milling",
+      "Operator"
+    ],
+    "inspector": [
+      "Quality",
+      "Inspector"
+    ],
+    "quality inspector": [
+      "Quality",
+      "QA Inspector"
+    ],
+    "qa inspector": [
+      "Quality",
+      "QA Inspector"
+    ],
+    "qc inspector": [
+      "Quality",
+      "QC Inspector"
+    ],
+    "quality team": [
+      "Quality",
+      "Inspector"
+    ],
+    "lab technician": [
+      "Quality",
+      "Lab Technician"
+    ],
+    "laboratory technician": [
+      "Quality",
+      "Lab Technician"
+    ],
+    "quality manager": [
+      "Quality",
+      "Quality Manager"
+    ],
+    "qa": [
+      "Quality",
+      "QA Inspector"
+    ],
+    "qc": [
+      "Quality",
+      "QC Inspector"
+    ],
+    "packer": [
+      "Packaging",
+      "Operator"
+    ],
+    "packaging operator": [
+      "Packaging",
+      "Operator"
+    ],
+    "packaging supervisor": [
+      "Packaging",
+      "Supervisor"
+    ],
+    "warehouse operator": [
+      "Storage",
+      "Operator"
+    ],
+    "storage supervisor": [
+      "Storage",
+      "Supervisor"
+    ],
+    "store keeper": [
+      "Storage",
+      "Store Keeper"
+    ],
+    "export officer": [
+      "Exports",
+      "Officer"
+    ],
+    "shipping clerk": [
+      "Exports",
+      "Clerk"
+    ],
+    "documentation officer": [
+      "Exports",
+      "Documentation Officer"
+    ],
+    "technician": [
+      "Milling",
+      "Maintenance Technician"
+    ],
+    "maintenance technician": [
+      "Milling",
+      "Maintenance Technician"
+    ],
+    "engineer": [
+      "Milling",
+      "Engineer"
+    ],
+    "maintenance team": [
+      "Milling",
+      "Maintenance Technician"
+    ],
+    "manager": [
+      "Quality",
+      "Department Manager"
+    ],
+    "supervisor": [
+      "Milling",
+      "Shift Supervisor"
+    ],
+    "management representative": [
+      "Quality",
+      "Management Representative"
+    ],
+    "mr": [
+      "Quality",
+      "Management Representative"
+    ],
+    "director": [
+      "Quality",
+      "Director"
+    ],
+    "fsms team leader": [
+      "Quality",
+      "FSMS Team Leader"
+    ]
+  },
+  "iso_clause_keywords": {
+    "8.5.1": [
+      "control",
+      "prevent",
+      "eliminate",
+      "hazard",
+      "contamination",
+      "ccp",
+      "critical control"
+    ],
+    "8.5.1.2": [
+      "limit",
+      "threshold",
+      "exceed",
+      "maximum",
+      "minimum",
+      "critical limit",
+      "specification"
+    ],
+    "8.5.1.3": [
+      "monitor",
+      "check",
+      "measure",
+      "verify",
+      "test",
+      "inspect",
+      "reading"
+    ],
+    "8.5.1.4": [
+      "corrective",
+      "exceeded",
+      "halt",
+      "stop",
+      "notify",
+      "reject",
+      "deviation",
+      "non-conforming"
+    ],
+    "7.5.3": [
+      "record",
+      "log",
+      "document",
+      "register",
+      "fill",
+      "complete",
+      "maintain records"
+    ],
+    "7.1.5.1": [
+      "calibrate",
+      "calibration",
+      "equipment",
+      "instrument",
+      "measuring device"
+    ],
+    "9.0": [
+      "review",
+      "audit",
+      "evaluate",
+      "assess",
+      "performance",
+      "effectiveness"
+    ]
+  },
+  "priority_keywords": {
+    "Critical": [
+      "immediately",
+      "urgent",
+      "halt",
+      "stop production",
+      "critical",
+      "food safety",
+      "aflatoxin",
+      "pathogen"
+    ],
+    "High": [
+      "before",
+      "prior to",
+      "must",
+      "every shift",
+      "hourly",
+      "every 2 hours",
+      "every 4 hours"
+    ],
+    "Medium": [
+      "daily",
+      "weekly",
+      "shall",
+      "required"
+    ],
+    "Low": [
+      "monthly",
+      "quarterly",
+      "annually",
+      "review",
+      "assess",
+      "periodic"
+    ]
+  },
+  "default_department": "Quality",
+  "default_role": "Staff",
+  "default_iso_clause": "8.5.1",
+  "default_priority": "Medium"
+}
