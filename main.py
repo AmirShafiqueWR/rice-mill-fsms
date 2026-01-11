@@ -92,6 +92,10 @@ class DocumentUpdate(BaseModel):
     approval_date: Optional[datetime] = Field(default=None, description="Approval date")
     file_path: Optional[str] = Field(default=None, description="Path to document file")
     file_hash: Optional[str] = Field(default=None, description="SHA-256 hash of file")
+    prepared_by: Optional[str] = Field(default=None, description="Document preparer name and role")
+    approved_by: Optional[str] = Field(default=None, description="Document approver name and role")
+    record_keeper: Optional[str] = Field(default=None, description="Record keeper name and role")
+    iso_clauses: Optional[str] = Field(default=None, description="Applicable ISO clauses")
 
     @field_validator("status")
     @classmethod

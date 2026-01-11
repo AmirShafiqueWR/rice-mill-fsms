@@ -470,14 +470,33 @@ async def approve_document(
             # This would need user input to select correct file
             source_path = str(possible_files[0])
 
-        # Step 5: Calculate file hash
-        file_hash = compute_file_hash(source_path)
-
-        # Step 6: Move and rename file
+        # Step 5: Generate standardized document with cover page
         doc_id = document.get("doc_id", f"FSMS-DOC-{document_id}")
         title = document.get("title", "Untitled")
 
-        new_file_path = move_to_controlled(source_path, doc_id, new_version, title)
+        # Update document with new version for cover page generation
+        document_for_cover = document.copy()
+        document_for_cover["version"] = new_version
+        document_for_cover["status"] = "Controlled"
+        document_for_cover["approval_date"] = datetime.utcnow().isoformat()
+
+        # Try to generate standardized document with cover page
+        try:
+            from document_generator import generate_controlled_document
+            new_file_path = generate_controlled_document(
+                source_pdf=source_path,
+                document=document_for_cover,
+                output_folder=FOLDERS["controlled"]
+            )
+        except ImportError:
+            # Fallback to simple move if document_generator not available
+            new_file_path = move_to_controlled(source_path, doc_id, new_version, title)
+        except Exception as e:
+            # Fallback to simple move if generation fails
+            new_file_path = move_to_controlled(source_path, doc_id, new_version, title)
+
+        # Step 6: Calculate file hash of the generated document
+        file_hash = compute_file_hash(new_file_path)
 
         # Step 7: Set read-only
         try:
