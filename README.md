@@ -36,3 +36,8 @@ Custom skills for ISO 22001:2018 Food Safety Management System compliance in ric
 | **fsms-task-extractor** | Extracts operational tasks from controlled documents by parsing "shall" statements and converting to database tasks with ISO clause mapping |
 
 **User Guide:** See [USER_GUIDE.md](./USER_GUIDE.md) for complete usage instructions.
+
+
+**Project WIP Video availabale @:** https://youtu.be/R2tMRZvoLiQ
+
+
