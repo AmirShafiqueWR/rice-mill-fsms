@@ -1,13 +1,18 @@
 """
 FSMS Task Extractor for Rice Export FSMS
 
-Digitalizes documents by extracting "shall" statements and converting
-them to operational tasks in the database.
+Digitalizes documents by extracting "shall" and "must" statements
+and converting them to operational tasks in the database.
+
+Supports Golden Template format:
+- SECTION 3: OPERATIONAL PROCEDURES (task extraction)
 
 Features:
+- Section-aware extraction (SECTION 3 only)
 - Configurable mappings (load from JSON or pass custom)
 - Context-aware extraction based on SOP content
 - Auto-detection of actors/departments from document
+- Numerical critical limit extraction (%, ppb, mm)
 - Fallback inference when mappings don't match
 """
 
@@ -376,32 +381,107 @@ def suggest_actor_mappings(context: DocumentContext) -> dict[str, tuple[str, str
 
 
 # ============================================================================
+# Section Extraction (Golden Template)
+# ============================================================================
+
+def extract_section_3(text: str) -> tuple[str, int]:
+    """
+    Extract SECTION 3: OPERATIONAL PROCEDURES from Golden Template.
+
+    Args:
+        text: Full document text
+
+    Returns:
+        Tuple of (section_3_text, start_page_estimate)
+    """
+    # Section 3 patterns
+    section_3_patterns = [
+        r'SECTION\s*3[:\s]*OPERATIONAL\s*PROCEDURES?',
+        r'3\.0?\s*OPERATIONAL\s*PROCEDURES?',
+        r'SECTION\s*3[:\s]*PROCEDURES?',
+        r'3\.0?\s*PROCEDURES?',
+        r'OPERATIONAL\s*PROCEDURES?',
+    ]
+
+    # Section 4 patterns (marks end of Section 3)
+    section_4_patterns = [
+        r'SECTION\s*4',
+        r'4\.0?\s*[A-Z]',
+        r'HAZARD\s*CONTROL',
+        r'HAZARD\s*ANALYSIS',
+    ]
+
+    # Find start of SECTION 3
+    section_3_start = 0
+    for pattern in section_3_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            section_3_start = match.start()
+            break
+
+    # Find end of SECTION 3 (start of SECTION 4)
+    section_3_end = len(text)
+    for pattern in section_4_patterns:
+        match = re.search(pattern, text[section_3_start + 100:], re.IGNORECASE)
+        if match:
+            section_3_end = section_3_start + 100 + match.start()
+            break
+
+    # If no section markers found, use entire document (backwards compatibility)
+    if section_3_start == 0 and section_3_end == len(text):
+        # Try to find "procedures" section anywhere
+        proc_match = re.search(r'procedures?', text, re.IGNORECASE)
+        if proc_match:
+            section_3_start = max(0, proc_match.start() - 50)
+
+    section_3_text = text[section_3_start:section_3_end]
+
+    # Estimate starting page (roughly 3000 chars per page)
+    start_page = (section_3_start // 3000) + 1
+
+    return section_3_text, start_page
+
+
+# ============================================================================
 # Text Extraction Patterns
 # ============================================================================
 
-def extract_mandatory_sentences(text: str) -> list[tuple[str, int]]:
+def extract_mandatory_sentences(
+    text: str,
+    section_3_only: bool = True
+) -> list[tuple[str, int]]:
     """
     Extract sentences containing mandatory action keywords.
 
     Args:
         text: Document text
+        section_3_only: If True, only extract from SECTION 3 (Golden Template)
 
     Returns:
         List of (sentence, approximate_page) tuples
     """
     sentences = []
 
+    # Extract SECTION 3 if requested
+    if section_3_only:
+        text_to_search, page_offset = extract_section_3(text)
+    else:
+        text_to_search = text
+        page_offset = 0
+
     # Build combined pattern for mandatory keywords
     keyword_pattern = '|'.join(MANDATORY_KEYWORDS)
 
     # Split text into pages (approximate by page breaks or character count)
-    pages = text.split('\f')  # Form feed is common page separator
+    pages = text_to_search.split('\f')  # Form feed is common page separator
     if len(pages) == 1:
         # No page breaks, estimate by character count (~3000 chars per page)
         char_per_page = 3000
-        pages = [text[i:i+char_per_page] for i in range(0, len(text), char_per_page)]
+        pages = [text_to_search[i:i+char_per_page] for i in range(0, len(text_to_search), char_per_page)]
 
     for page_num, page_text in enumerate(pages, 1):
+        actual_page = page_num + page_offset - 1
+
         # Extract sentences containing mandatory keywords
         # Pattern: Capital letter to period, containing keyword
         sentence_pattern = r'([A-Z][^.]*(?:' + keyword_pattern + r')[^.]*\.)'
@@ -412,7 +492,7 @@ def extract_mandatory_sentences(text: str) -> list[tuple[str, int]]:
             # Clean up the sentence
             sentence = ' '.join(match.split())
             if len(sentence) > 20:  # Filter out too short matches
-                sentences.append((sentence, page_num))
+                sentences.append((sentence, actual_page))
 
     return sentences
 
@@ -777,15 +857,20 @@ def parse_task_from_sentence(
 def extract_tasks_from_text(
     text: str,
     config: ExtractorConfig = None,
-    analyze_context: bool = True
+    analyze_context: bool = True,
+    section_3_only: bool = True
 ) -> tuple[list[ExtractedTask], DocumentContext]:
     """
     Extract all tasks from document text.
+
+    By default, only extracts from SECTION 3: OPERATIONAL PROCEDURES
+    (Golden Template format).
 
     Args:
         text: Full document text
         config: Extractor configuration (uses default if None)
         analyze_context: Whether to analyze document context first
+        section_3_only: If True, only extract from SECTION 3 (default: True)
 
     Returns:
         Tuple of (List of ExtractedTask objects, DocumentContext)
@@ -798,7 +883,8 @@ def extract_tasks_from_text(
     if analyze_context:
         context = analyze_document_context(text, config)
 
-    sentences = extract_mandatory_sentences(text)
+    # Extract mandatory sentences from SECTION 3 only (Golden Template)
+    sentences = extract_mandatory_sentences(text, section_3_only=section_3_only)
     tasks = []
 
     for sentence, page_num in sentences:
@@ -1099,7 +1185,11 @@ Tasks by Department:
 # Utility Functions
 # ============================================================================
 
-def preview_extraction(text: str, config: ExtractorConfig = None) -> str:
+def preview_extraction(
+    text: str,
+    config: ExtractorConfig = None,
+    section_3_only: bool = True
+) -> str:
     """
     Preview extraction without creating tasks in database.
     Useful for testing and validation.
@@ -1107,13 +1197,21 @@ def preview_extraction(text: str, config: ExtractorConfig = None) -> str:
     Args:
         text: Document text
         config: Extractor configuration
+        section_3_only: If True, only extract from SECTION 3 (default: True)
 
     Returns:
         Preview report string
     """
-    tasks, context = extract_tasks_from_text(text, config)
+    tasks, context = extract_tasks_from_text(text, config, section_3_only=section_3_only)
 
-    report = f"""Extraction Preview
+    # Get section 3 info for report
+    section_3_text, start_page = extract_section_3(text)
+    section_3_length = len(section_3_text)
+
+    report = f"""Extraction Preview (Golden Template)
+
+Source: {"SECTION 3: OPERATIONAL PROCEDURES only" if section_3_only else "Full document"}
+Section 3 Length: {section_3_length} characters (starts at page ~{start_page})
 
 Document Context:
 - Type: {context.document_type if context else 'Unknown'}
@@ -1124,7 +1222,7 @@ Document Context:
 Actors Found: {', '.join(context.unique_actors) if context else 'None'}
 Unmapped Actors: {', '.join(context.unmapped_actors) if context else 'None'}
 
-Extracted {len(tasks)} Tasks:
+Extracted {len(tasks)} Tasks from SECTION 3:
 """
 
     for i, task in enumerate(tasks, 1):

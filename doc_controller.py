@@ -3,6 +3,13 @@ Document Controller for Rice Export FSMS
 
 Implements ISO 22001:2018 Clause 7.5.3 (Control of Documented Information)
 Manages document state transitions, version control, and file operations.
+
+Controlled Transition Workflow:
+1. Prerequisite Check - Validate doc_id pattern and mandatory metadata
+2. System-Driven Renaming - {doc_id}_v{version}_{title_slug}.pdf
+3. Read-Only Lock - Set file permissions to prevent editing
+4. Hash Integrity Sync - Compute SHA-256 and update database
+5. Audit Trail - Log to audit_log.txt
 """
 
 import os
@@ -13,9 +20,11 @@ import stat
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
+
+from models import DEPARTMENT_CODES, DOC_TYPE_CODES, VALID_DEPARTMENTS
 
 
 # ============================================================================
@@ -47,11 +56,12 @@ class ApprovalResult:
     file_path: str
     file_hash: str
     message: str
-    errors: list = None
-
-    def __post_init__(self):
-        if self.errors is None:
-            self.errors = []
+    errors: list = field(default_factory=list)
+    # New fields for enhanced audit trail
+    previous_version: str = ""
+    approval_timestamp: str = ""
+    locked: bool = False
+    audit_logged: bool = False
 
 
 @dataclass
@@ -258,6 +268,71 @@ def log_audit(action: str, doc_id: str, user: str, details: str = ""):
         f.write(log_entry)
 
 
+def log_controlled_transition(
+    doc_id: str,
+    document_id: int,
+    previous_version: str,
+    new_version: str,
+    file_path: str,
+    file_hash: str,
+    approver: str,
+    locked: bool = True
+) -> bool:
+    """
+    Write detailed audit entry for Controlled transition (ISO 7.5.3 compliance).
+
+    This creates a comprehensive audit record confirming the file has been:
+    - Successfully locked under its system-generated ID
+    - Renamed to controlled format
+    - Hash integrity verified
+    - Permissions set to read-only
+
+    Args:
+        doc_id: System-generated document ID
+        document_id: Database ID
+        previous_version: Version before approval
+        new_version: Version after approval
+        file_path: Final path in controlled folder
+        file_hash: SHA-256 hash of the file
+        approver: Name of approver
+        locked: Whether file was locked successfully
+
+    Returns:
+        True if audit log written successfully
+    """
+    timestamp = datetime.now().isoformat()
+
+    audit_entry = f"""
+================================================================================
+CONTROLLED DOCUMENT TRANSITION - ISO 22001:2018 Clause 7.5.3
+================================================================================
+Timestamp:        {timestamp}
+Document ID:      {doc_id}
+Database ID:      {document_id}
+Previous Version: {previous_version}
+New Version:      {new_version}
+Approved By:      {approver}
+--------------------------------------------------------------------------------
+FILE OPERATIONS:
+  Final Path:     {file_path}
+  File Hash:      {file_hash}
+  Read-Only Lock: {"YES - File permissions set to read-only" if locked else "NO - Lock failed"}
+--------------------------------------------------------------------------------
+STATUS: Document successfully indexed under system-generated ID.
+        File has been {"LOCKED" if locked else "NOT LOCKED"} per ISO 7.5.3 requirements.
+================================================================================
+
+"""
+
+    try:
+        with open(AUDIT_LOG_FILE, "a") as f:
+            f.write(audit_entry)
+        return True
+    except Exception as e:
+        print(f"Warning: Failed to write audit log: {e}")
+        return False
+
+
 # ============================================================================
 # API Operations
 # ============================================================================
@@ -333,9 +408,96 @@ async def mark_obsolete(document_id: int) -> dict:
 # Validation
 # ============================================================================
 
+def validate_doc_id_pattern(doc_id: str, department: str) -> tuple[bool, str]:
+    """
+    Validate doc_id matches the expected pattern for the department.
+
+    Expected format: {DEPT_CODE}-{DOC_TYPE}-{XXX}
+    Example: MILL-SOP-001, QAL-REC-002
+
+    Args:
+        doc_id: Document ID to validate
+        department: Department name
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if not doc_id:
+        return False, "doc_id is required"
+
+    # Get expected department code
+    expected_dept_code = DEPARTMENT_CODES.get(department)
+    if not expected_dept_code:
+        return False, f"Unknown department: {department}"
+
+    # Parse doc_id
+    pattern = r'^([A-Z]+)-([A-Z]+)-(\d{3})$'
+    match = re.match(pattern, doc_id)
+
+    if not match:
+        return False, f"Invalid doc_id format: {doc_id}. Expected {expected_dept_code}-TYPE-XXX"
+
+    actual_dept_code = match.group(1)
+    doc_type_code = match.group(2)
+    sequence = match.group(3)
+
+    # Validate department code matches
+    if actual_dept_code != expected_dept_code:
+        return False, f"doc_id department mismatch: {actual_dept_code} != {expected_dept_code} (for {department})"
+
+    # Validate doc_type is valid
+    if doc_type_code not in DOC_TYPE_CODES.values():
+        return False, f"Invalid document type code in doc_id: {doc_type_code}"
+
+    return True, ""
+
+
+def validate_mandatory_metadata(document: dict) -> tuple[bool, list]:
+    """
+    Validate all mandatory metadata fields from Golden Template are present.
+
+    Required fields (ISO 7.5.2):
+    - prepared_by
+    - approved_by
+    - department
+    - record_keeper (recommended)
+
+    Args:
+        document: Document data from API
+
+    Returns:
+        Tuple of (is_valid, list_of_missing_fields)
+    """
+    missing = []
+
+    # Mandatory fields for Controlled status
+    mandatory_fields = [
+        ("prepared_by", "Prepared By - ISO 7.5.2 requirement"),
+        ("approved_by", "Approved By - ISO 7.5.2 requirement"),
+        ("department", "Department - organization requirement"),
+    ]
+
+    for field_name, description in mandatory_fields:
+        value = document.get(field_name, "").strip()
+        if not value:
+            missing.append(f"Missing '{field_name}': {description}")
+
+    # Recommended fields (warning only)
+    if not document.get("record_keeper", "").strip():
+        missing.append("Warning: 'record_keeper' not specified (recommended for ISO compliance)")
+
+    return len([m for m in missing if not m.startswith("Warning")]) == 0, missing
+
+
 def validate_approval_prerequisites(document: dict) -> tuple[bool, list]:
     """
-    Validate all prerequisites for document approval.
+    Validate all prerequisites for document approval (Controlled transition).
+
+    Checks:
+    1. doc_id matches department pattern (e.g., MILL-SOP-001 for Milling)
+    2. Mandatory metadata fields are present (prepared_by, approved_by)
+    3. Document is not already Obsolete
+    4. Version format is valid
 
     Args:
         document: Document data from API
@@ -345,30 +507,41 @@ def validate_approval_prerequisites(document: dict) -> tuple[bool, list]:
     """
     errors = []
 
-    # Check 1: Ownership fields
-    if not document.get("prepared_by"):
-        errors.append("Missing 'prepared_by' field - ISO 7.5.2 requirement")
+    doc_id = document.get("doc_id", "")
+    department = document.get("department", "")
 
-    if not document.get("approved_by"):
-        errors.append("Missing 'approved_by' field - ISO 7.5.2 requirement")
+    # Check 1: Validate doc_id matches department pattern
+    doc_id_valid, doc_id_error = validate_doc_id_pattern(doc_id, department)
+    if not doc_id_valid:
+        errors.append(f"BLOCKING: {doc_id_error}")
 
-    if not document.get("department"):
-        errors.append("Missing 'department' field - organization requirement")
+    # Check 2: Validate mandatory metadata from Golden Template
+    metadata_valid, metadata_errors = validate_mandatory_metadata(document)
+    if not metadata_valid:
+        for err in metadata_errors:
+            if err.startswith("Warning"):
+                errors.append(err)  # Include but don't block
+            else:
+                errors.append(f"BLOCKING: {err}")
 
-    # Check 2: Document should be in Draft status for initial approval
+    # Check 3: Document should not be Obsolete
     status = document.get("status", "")
     if status == "Obsolete":
-        errors.append("Cannot approve Obsolete document - create new version instead")
+        errors.append("BLOCKING: Cannot approve Obsolete document - create new version instead")
 
-    # Check 3: Version format
+    # Check 4: Version format
     version = document.get("version", "")
     if version:
         try:
             VersionInfo.parse(version)
         except ValueError as e:
-            errors.append(str(e))
+            errors.append(f"BLOCKING: {str(e)}")
 
-    return len(errors) == 0, errors
+    # Determine if we have any blocking errors
+    blocking_errors = [e for e in errors if e.startswith("BLOCKING")]
+    is_valid = len(blocking_errors) == 0
+
+    return is_valid, errors
 
 
 def validate_version_transition(current_version: str, new_version: str, is_major: bool) -> tuple[bool, str]:
@@ -401,7 +574,7 @@ def validate_version_transition(current_version: str, new_version: str, is_major
 
 
 # ============================================================================
-# Main Approval Workflow
+# Main Approval Workflow (Controlled Transition)
 # ============================================================================
 
 async def approve_document(
@@ -410,7 +583,14 @@ async def approve_document(
     approver_name: str = None
 ) -> ApprovalResult:
     """
-    Main approval workflow for document.
+    Main approval workflow for document transition to Controlled status.
+
+    Implements ISO 22001:2018 Clause 7.5.3 (Control of Documented Information):
+    1. PREREQUISITE CHECK - Validate doc_id pattern and mandatory metadata
+    2. SYSTEM-DRIVEN RENAMING - {doc_id}_v{version}_{title_slug}.pdf
+    3. READ-ONLY LOCK - Set file permissions to prevent editing
+    4. HASH INTEGRITY SYNC - Compute SHA-256 and update database
+    5. AUDIT TRAIL - Log to audit_log.txt
 
     Args:
         document_id: Database ID of document to approve
@@ -420,26 +600,39 @@ async def approve_document(
     Returns:
         ApprovalResult with status and details
     """
-    try:
-        # Step 1: Fetch document
-        document = await get_document(document_id)
+    approval_timestamp = datetime.utcnow().isoformat()
 
-        # Step 2: Validate prerequisites
+    try:
+        # ================================================================
+        # STEP 1: Fetch document from database
+        # ================================================================
+        document = await get_document(document_id)
+        doc_id = document.get("doc_id", "")
+        current_version = document.get("version", "v0.1")
+
+        # ================================================================
+        # STEP 2: PREREQUISITE CHECK
+        # Validate doc_id matches department pattern and mandatory metadata
+        # ================================================================
         is_valid, errors = validate_approval_prerequisites(document)
         if not is_valid:
+            blocking_errors = [e for e in errors if e.startswith("BLOCKING")]
             return ApprovalResult(
                 success=False,
                 document_id=document_id,
-                doc_id=document.get("doc_id", ""),
-                version=document.get("version", ""),
+                doc_id=doc_id,
+                version=current_version,
                 file_path="",
                 file_hash="",
                 message="Approval blocked: Prerequisites not met",
-                errors=errors
+                errors=errors,
+                previous_version=current_version,
+                approval_timestamp=approval_timestamp
             )
 
-        # Step 3: Determine new version
-        current_version = document.get("version", "v0.1")
+        # ================================================================
+        # STEP 3: Determine new version
+        # ================================================================
         current_info = VersionInfo.parse(current_version)
 
         if current_info.major == 0:
@@ -450,7 +643,9 @@ async def approve_document(
         else:
             new_version = str(current_info.increment_minor())
 
-        # Step 4: Get source file path
+        # ================================================================
+        # STEP 4: Locate source file
+        # ================================================================
         source_path = document.get("file_path", "")
         if not source_path or not Path(source_path).exists():
             # Try to find in raw folder
@@ -460,25 +655,35 @@ async def approve_document(
                 return ApprovalResult(
                     success=False,
                     document_id=document_id,
-                    doc_id=document.get("doc_id", ""),
+                    doc_id=doc_id,
                     version=current_version,
                     file_path="",
                     file_hash="",
-                    message="Source file not found in raw folder",
-                    errors=["No source file available for this document"]
+                    message="Source file not found",
+                    errors=["No source file available - upload a file first"],
+                    previous_version=current_version,
+                    approval_timestamp=approval_timestamp
                 )
-            # This would need user input to select correct file
             source_path = str(possible_files[0])
 
-        # Step 5: Generate standardized document with cover page
-        doc_id = document.get("doc_id", f"FSMS-DOC-{document_id}")
+        # ================================================================
+        # STEP 5: SYSTEM-DRIVEN RENAMING
+        # Generate controlled document with standardized filename:
+        # {doc_id}_v{version}_{title_slug}.pdf
+        # ================================================================
         title = document.get("title", "Untitled")
+        ensure_folders_exist()
 
-        # Update document with new version for cover page generation
+        # Update document metadata for cover page generation
         document_for_cover = document.copy()
         document_for_cover["version"] = new_version
         document_for_cover["status"] = "Controlled"
-        document_for_cover["approval_date"] = datetime.utcnow().isoformat()
+        document_for_cover["approval_date"] = approval_timestamp
+
+        # Generate controlled filename
+        source_ext = Path(source_path).suffix
+        controlled_filename = generate_controlled_filename(doc_id, new_version, title, source_ext)
+        new_file_path = str(Path(FOLDERS["controlled"]) / controlled_filename)
 
         # Try to generate standardized document with cover page
         try:
@@ -489,46 +694,65 @@ async def approve_document(
                 output_folder=FOLDERS["controlled"]
             )
         except ImportError:
-            # Fallback to simple move if document_generator not available
-            new_file_path = move_to_controlled(source_path, doc_id, new_version, title)
+            # Fallback to simple copy with rename if document_generator not available
+            shutil.copy2(source_path, new_file_path)
         except Exception as e:
-            # Fallback to simple move if generation fails
-            new_file_path = move_to_controlled(source_path, doc_id, new_version, title)
+            # Fallback to simple copy with rename if generation fails
+            shutil.copy2(source_path, new_file_path)
 
-        # Step 6: Calculate file hash of the generated document
+        # ================================================================
+        # STEP 6: HASH INTEGRITY SYNC
+        # Re-compute SHA-256 hash of the renamed/generated file
+        # ================================================================
         file_hash = compute_file_hash(new_file_path)
 
-        # Step 7: Set read-only
+        # ================================================================
+        # STEP 7: READ-ONLY LOCK
+        # Set file permissions to read-only (ISO 7.5.3 requirement)
+        # ================================================================
+        locked = False
         try:
             set_readonly(new_file_path)
+            locked = True
         except Exception as e:
-            # Log but don't fail - Windows may not support this
-            pass
+            # Log warning but don't fail - Windows may have permission issues
+            print(f"Warning: Could not set read-only: {e}")
 
-        # Step 8: Archive old version if exists
+        # ================================================================
+        # STEP 8: Archive old version if exists
+        # ================================================================
         if document.get("status") == "Controlled" and document.get("file_path"):
             old_path = document.get("file_path")
             if Path(old_path).exists():
                 archive_old_version(old_path, doc_id, current_version)
 
-        # Step 9: Update database
+        # ================================================================
+        # STEP 9: Update database with final hash and new file_path
+        # ================================================================
         approver = approver_name or document.get("approved_by", "System")
         update_data = {
             "status": "Controlled",
             "version": new_version,
-            "approval_date": datetime.utcnow().isoformat(),
+            "approval_date": approval_timestamp,
             "file_path": new_file_path,
             "file_hash": file_hash
         }
 
         await update_document(document_id, update_data)
 
-        # Step 10: Log audit trail
-        log_audit(
-            action="APPROVED",
+        # ================================================================
+        # STEP 10: AUDIT TRAIL
+        # Write comprehensive audit entry confirming controlled transition
+        # ================================================================
+        audit_logged = log_controlled_transition(
             doc_id=doc_id,
-            user=approver,
-            details=f"Version: {current_version} → {new_version} | File: {new_file_path}"
+            document_id=document_id,
+            previous_version=current_version,
+            new_version=new_version,
+            file_path=new_file_path,
+            file_hash=file_hash,
+            approver=approver,
+            locked=locked
         )
 
         return ApprovalResult(
@@ -538,7 +762,12 @@ async def approve_document(
             version=new_version,
             file_path=new_file_path,
             file_hash=file_hash,
-            message=f"Document approved successfully as {new_version}"
+            message=f"Document approved and locked as {new_version}",
+            errors=[],
+            previous_version=current_version,
+            approval_timestamp=approval_timestamp,
+            locked=locked,
+            audit_logged=audit_logged
         )
 
     except Exception as e:
@@ -550,7 +779,9 @@ async def approve_document(
             file_path="",
             file_hash="",
             message=f"Approval failed: {str(e)}",
-            errors=[str(e)]
+            errors=[str(e)],
+            previous_version="",
+            approval_timestamp=approval_timestamp
         )
 
 

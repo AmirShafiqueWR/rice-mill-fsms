@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session, select, func
 
 from database import get_session, health_check as db_health_check
-from models import Document, Task, VALID_DEPARTMENTS, STATUS_TRANSITIONS
+from models import Document, Task, VALID_DEPARTMENTS, STATUS_TRANSITIONS, VALID_DOC_TYPES, DEPARTMENT_CODES, DOC_TYPE_CODES
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -58,14 +58,16 @@ class ErrorResponse(BaseModel):
 
 
 class DocumentCreate(BaseModel):
-    """Schema for creating a new document."""
-    doc_id: str = Field(..., description="Unique document identifier (e.g., FSMS-SOP-001)")
+    """Schema for creating a new document with auto-generated ID."""
+    # doc_id is now optional - will be auto-generated if not provided
+    doc_id: Optional[str] = Field(default=None, description="Document ID (auto-generated if not provided, e.g., MILL-SOP-001)")
+    doc_type: str = Field(..., description="Document type: SOP, POL, REC, PF, WI, SPEC, PLAN, MAN")
     title: str = Field(..., description="Document title")
     department: str = Field(..., description="Department: Milling, Quality, Exports, Packaging, Storage")
-    version: str = Field(..., description="Version format: v1.0, v1.1, v2.0")
-    prepared_by: str = Field(..., description="Person who prepared the document")
-    approved_by: str = Field(..., description="Person who approved the document")
-    record_keeper: str = Field(..., description="Person responsible for record keeping")
+    version: str = Field(default="v0.1", description="Version format: v1.0, v1.1, v2.0")
+    prepared_by: Optional[str] = Field(default="", description="Person who prepared the document")
+    approved_by: Optional[str] = Field(default="", description="Person who approved the document")
+    record_keeper: Optional[str] = Field(default="", description="Person responsible for record keeping")
     review_cycle_months: int = Field(default=12, description="Review cycle in months")
     iso_clauses: Optional[List[str]] = Field(default=None, description="List of ISO clause numbers")
     file_path: Optional[str] = Field(default=None, description="Path to document file")
@@ -75,6 +77,13 @@ class DocumentCreate(BaseModel):
     def validate_department(cls, v):
         if v not in VALID_DEPARTMENTS:
             raise ValueError(f"Department must be one of: {VALID_DEPARTMENTS}")
+        return v
+
+    @field_validator("doc_type")
+    @classmethod
+    def validate_doc_type(cls, v):
+        if v not in VALID_DOC_TYPES:
+            raise ValueError(f"Document type must be one of: {VALID_DOC_TYPES}")
         return v
 
     @field_validator("version")
@@ -309,7 +318,7 @@ async def health_check():
     status_code=status.HTTP_201_CREATED,
     tags=["Documents"],
     summary="Create Document",
-    description="Create a new controlled document",
+    description="Create a new controlled document with auto-generated ID",
     responses={
         400: {"model": ErrorResponse, "description": "Validation error"},
         500: {"model": ErrorResponse, "description": "Database error"}
@@ -319,36 +328,62 @@ async def create_document(doc: DocumentCreate, db: Session = Depends(get_db)):
     """
     Create a new document for ISO 22001:2018 compliance.
 
-    Example:
+    The doc_id is automatically generated based on department and doc_type:
+    - Format: {DEPT_CODE}-{DOC_TYPE}-{XXX}
+    - Example: MILL-SOP-001, QAL-REC-002, EXP-POL-001
+
+    Department Codes: MILL, QAL, EXP, PKG, STR
+    Doc Types: SOP, POL, REC, PF, WI, SPEC, PLAN, MAN
+
+    Example Request:
     ```json
     {
-        "doc_id": "FSMS-SOP-001",
+        "doc_type": "SOP",
         "title": "Milling Procedures",
         "department": "Milling",
-        "version": "v1.0",
-        "prepared_by": "Quality Manager",
-        "approved_by": "Plant Director",
-        "record_keeper": "Document Control"
+        "file_path": "documents/raw/milling_procedure.pdf"
+    }
+    ```
+
+    Example Response:
+    ```json
+    {
+        "doc_id": "MILL-SOP-001",
+        "title": "Milling Procedures",
+        ...
     }
     ```
     """
-    # Check for duplicate doc_id
-    existing = db.exec(select(Document).where(Document.doc_id == doc.doc_id)).first()
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error_code": "DUPLICATE_DOC_ID", "detail": f"Document with doc_id '{doc.doc_id}' already exists"}
-        )
+    # Generate or validate doc_id
+    if doc.doc_id:
+        # User provided doc_id - check for duplicates
+        existing = db.exec(select(Document).where(Document.doc_id == doc.doc_id)).first()
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error_code": "DUPLICATE_DOC_ID", "detail": f"Document with doc_id '{doc.doc_id}' already exists"}
+            )
+        generated_doc_id = doc.doc_id
+    else:
+        # Auto-generate doc_id based on department and doc_type
+        try:
+            generated_doc_id = Document.generate_next_id(db, doc.department, doc.doc_type)
+            logger.info(f"Auto-generated doc_id: {generated_doc_id}")
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error_code": "INVALID_PARAMS", "detail": str(e)}
+            )
 
-    # Create document
+    # Create document with generated or provided doc_id
     document = Document(
-        doc_id=doc.doc_id,
+        doc_id=generated_doc_id,
         title=doc.title,
         department=doc.department,
         version=doc.version,
-        prepared_by=doc.prepared_by,
-        approved_by=doc.approved_by,
-        record_keeper=doc.record_keeper,
+        prepared_by=doc.prepared_by or "",
+        approved_by=doc.approved_by or "",
+        record_keeper=doc.record_keeper or "",
         review_cycle_months=doc.review_cycle_months,
         file_path=doc.file_path
     )
@@ -356,11 +391,12 @@ async def create_document(doc: DocumentCreate, db: Session = Depends(get_db)):
     if doc.iso_clauses:
         document.set_iso_clauses(doc.iso_clauses)
 
+    # Add and commit - event listeners will compute version_hash
     db.add(document)
     db.commit()
     db.refresh(document)
 
-    logger.info(f"Created document: {document.doc_id}")
+    logger.info(f"Created document: {document.doc_id} (Department: {doc.department}, Type: {doc.doc_type})")
     return document
 
 

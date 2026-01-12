@@ -20,6 +20,30 @@ from sqlalchemy import Column, String, Text, CheckConstraint, event
 # Valid departments for Rice Mill FSMS
 VALID_DEPARTMENTS = ["Milling", "Quality", "Exports", "Packaging", "Storage"]
 
+# Department codes for auto-generated doc_id
+DEPARTMENT_CODES = {
+    "Milling": "MILL",
+    "Quality": "QAL",
+    "Exports": "EXP",
+    "Packaging": "PKG",
+    "Storage": "STR"
+}
+
+# Document type codes for auto-generated doc_id
+DOC_TYPE_CODES = {
+    "SOP": "SOP",      # Standard Operating Procedure
+    "POL": "POL",      # Policy
+    "REC": "REC",      # Record/Form
+    "PF": "PF",        # Process Flow
+    "WI": "WI",        # Work Instruction
+    "SPEC": "SPEC",    # Specification
+    "PLAN": "PLAN",    # Plan (HACCP, Food Safety, etc.)
+    "MAN": "MAN",      # Manual
+}
+
+# Valid document types
+VALID_DOC_TYPES = list(DOC_TYPE_CODES.keys())
+
 # Status transitions (one-way only)
 STATUS_TRANSITIONS = {
     "Draft": ["Controlled"],
@@ -94,8 +118,13 @@ class Document(SQLModel, table=True):
         return new_status in allowed
 
     def compute_version_hash(self) -> str:
-        """Compute SHA-256 hash of record for tamper detection."""
-        data = f"{self.doc_id}|{self.title}|{self.department}|{self.version}|{self.status}|{self.prepared_by}|{self.approved_by}|{self.iso_clauses}"
+        """Compute SHA-256 hash of record for tamper detection.
+
+        Includes all metadata fields for ISO 22001:2018 audit trail integrity:
+        doc_id, title, department, version, status, prepared_by, approved_by,
+        record_keeper, iso_clauses, file_hash
+        """
+        data = f"{self.doc_id}|{self.title}|{self.department}|{self.version}|{self.status}|{self.prepared_by}|{self.approved_by}|{self.record_keeper}|{self.iso_clauses}|{self.file_hash or ''}"
         return hashlib.sha256(data.encode()).hexdigest()
 
     def update_version_hash(self):
@@ -121,6 +150,63 @@ class Document(SQLModel, table=True):
             for byte_block in iter(lambda: f.read(4096), b""):
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()
+
+    @staticmethod
+    def generate_next_id(session, department: str, doc_type: str) -> str:
+        """
+        Generate the next auto-incremented document ID based on department and doc_type.
+
+        Format: {DEPT_CODE}-{DOC_TYPE}-{XXX}
+        Example: MILL-SOP-001, QAL-REC-002, EXP-POL-001
+
+        Args:
+            session: SQLModel/SQLAlchemy session
+            department: Department name (e.g., "Milling", "Quality")
+            doc_type: Document type (e.g., "SOP", "POL", "REC")
+
+        Returns:
+            Generated doc_id string like "MILL-SOP-001"
+
+        Raises:
+            ValueError: If department or doc_type is invalid
+        """
+        from sqlmodel import select, func
+
+        # Validate department
+        if department not in DEPARTMENT_CODES:
+            raise ValueError(f"Invalid department: {department}. Must be one of {list(DEPARTMENT_CODES.keys())}")
+
+        # Validate doc_type
+        if doc_type not in DOC_TYPE_CODES:
+            raise ValueError(f"Invalid doc_type: {doc_type}. Must be one of {VALID_DOC_TYPES}")
+
+        dept_code = DEPARTMENT_CODES[department]
+        type_code = DOC_TYPE_CODES[doc_type]
+
+        # Build prefix pattern for counting
+        prefix = f"{dept_code}-{type_code}-"
+
+        # Count existing documents with this prefix
+        count_query = select(func.count()).select_from(Document).where(
+            Document.doc_id.like(f"{prefix}%")
+        )
+        existing_count = session.exec(count_query).one()
+
+        # Generate next number with 3-digit leading zeros
+        next_number = existing_count + 1
+        new_doc_id = f"{prefix}{next_number:03d}"
+
+        return new_doc_id
+
+    @staticmethod
+    def get_department_code(department: str) -> str:
+        """Get the code for a department."""
+        return DEPARTMENT_CODES.get(department, "UNK")
+
+    @staticmethod
+    def get_doc_type_code(doc_type: str) -> str:
+        """Get the code for a document type."""
+        return DOC_TYPE_CODES.get(doc_type, "DOC")
 
 
 class Task(SQLModel, table=True):

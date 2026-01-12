@@ -3,6 +3,11 @@ ISO 22001:2018 Gap Analyzer for Rice Export FSMS
 
 This module provides document classification, gap analysis,
 and compliance reporting for food safety documents.
+
+Supports "Golden Template" format with:
+- SECTION 1: DOCUMENT METADATA
+- SECTION 3: OPERATIONAL PROCEDURES
+- SECTION 4: HAZARD CONTROL
 """
 
 import os
@@ -25,6 +30,8 @@ from iso_22001_clauses import (
     SEVERITY_WEIGHTS
 )
 
+from models import VALID_DEPARTMENTS, VALID_DOC_TYPES, DEPARTMENT_CODES, DOC_TYPE_CODES
+
 
 # ============================================================================
 # Data Classes
@@ -32,8 +39,9 @@ from iso_22001_clauses import (
 
 @dataclass
 class DocumentMetadata:
-    """Extracted document metadata."""
+    """Extracted document metadata from Golden Template SECTION 1."""
     title: str = ""
+    doc_type: str = ""  # SOP, POL, REC, etc.
     prepared_by: str = ""
     approved_by: str = ""
     record_keeper: str = ""
@@ -41,6 +49,7 @@ class DocumentMetadata:
     version: str = ""
     effective_date: str = ""
     review_date: str = ""
+    extraction_confidence: float = 0.0  # 0-1 confidence score
 
 
 @dataclass
@@ -58,6 +67,296 @@ class GapAnalysisResult:
     blocking_gaps: list = field(default_factory=list)
     is_blocked: bool = False
     suggestions: list = field(default_factory=list)
+    # Audit Sync validation
+    audit_sync_valid: bool = True
+    audit_sync_errors: list = field(default_factory=list)
+    # Rice Hazard validation (SECTION 4)
+    hazard_gaps: list = field(default_factory=list)
+
+
+# ============================================================================
+# MetadataExtractor Class (Golden Template SECTION 1)
+# ============================================================================
+
+class MetadataExtractor:
+    """
+    Extracts metadata from Golden Template SECTION 1.
+
+    Golden Template Structure:
+    - SECTION 1: DOCUMENT METADATA
+      - Department
+      - Document Type
+      - Prepared By
+      - Approved By
+      - Record Keeper
+    """
+
+    # Section markers
+    SECTION_1_PATTERNS = [
+        r'SECTION\s*1[:\s]*DOCUMENT\s*METADATA',
+        r'1\.0?\s*DOCUMENT\s*METADATA',
+        r'DOCUMENT\s*INFORMATION',
+        r'DOCUMENT\s*CONTROL\s*HEADER',
+    ]
+
+    SECTION_2_PATTERNS = [
+        r'SECTION\s*2',
+        r'2\.0?\s*[A-Z]',
+    ]
+
+    def __init__(self, text: str):
+        """
+        Initialize with document text.
+
+        Args:
+            text: Full document text
+        """
+        self.text = text
+        self.section_1_text = self._extract_section_1()
+
+    def _extract_section_1(self) -> str:
+        """Extract SECTION 1 content from document."""
+        text = self.text
+
+        # Find start of SECTION 1
+        start_pos = 0
+        for pattern in self.SECTION_1_PATTERNS:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                start_pos = match.start()
+                break
+
+        # Find end of SECTION 1 (start of SECTION 2)
+        end_pos = len(text)
+        for pattern in self.SECTION_2_PATTERNS:
+            match = re.search(pattern, text[start_pos:], re.IGNORECASE)
+            if match:
+                end_pos = start_pos + match.start()
+                break
+
+        # If no explicit section markers, use first ~2000 chars
+        if start_pos == 0 and end_pos == len(text):
+            end_pos = min(2000, len(text))
+
+        return text[start_pos:end_pos]
+
+    def extract(self) -> DocumentMetadata:
+        """
+        Extract all metadata from SECTION 1.
+
+        Returns:
+            DocumentMetadata object with extracted values
+        """
+        metadata = DocumentMetadata()
+        confidence_scores = []
+
+        # Extract each field
+        metadata.title = self._extract_title()
+        if metadata.title:
+            confidence_scores.append(1.0)
+
+        metadata.doc_type = self._extract_doc_type()
+        if metadata.doc_type:
+            confidence_scores.append(1.0)
+        else:
+            confidence_scores.append(0.0)
+
+        metadata.department = self._extract_department()
+        if metadata.department:
+            confidence_scores.append(1.0)
+        else:
+            confidence_scores.append(0.0)
+
+        metadata.prepared_by = self._extract_field(
+            [r'prepared\s*by[:\s]*([^\n,;|]{2,50})',
+             r'author[:\s]*([^\n,;|]{2,50})',
+             r'drafted\s*by[:\s]*([^\n,;|]{2,50})']
+        )
+        if metadata.prepared_by:
+            confidence_scores.append(1.0)
+        else:
+            confidence_scores.append(0.0)
+
+        metadata.approved_by = self._extract_field(
+            [r'approved\s*by[:\s]*([^\n,;|]{2,50})',
+             r'authorization[:\s]*([^\n,;|]{2,50})',
+             r'authorised\s*by[:\s]*([^\n,;|]{2,50})']
+        )
+        if metadata.approved_by:
+            confidence_scores.append(1.0)
+        else:
+            confidence_scores.append(0.0)
+
+        metadata.record_keeper = self._extract_field(
+            [r'record\s*keeper[:\s]*([^\n,;|]{2,50})',
+             r'document\s*control(?:ler)?[:\s]*([^\n,;|]{2,50})',
+             r'custodian[:\s]*([^\n,;|]{2,50})']
+        )
+        if metadata.record_keeper:
+            confidence_scores.append(1.0)
+        else:
+            confidence_scores.append(0.5)  # Less critical
+
+        metadata.version = self._extract_version()
+        metadata.effective_date = self._extract_date('effective')
+        metadata.review_date = self._extract_date('review')
+
+        # Calculate overall confidence
+        if confidence_scores:
+            metadata.extraction_confidence = sum(confidence_scores) / len(confidence_scores)
+
+        return metadata
+
+    def _extract_title(self) -> str:
+        """Extract document title."""
+        # Try explicit title field first
+        patterns = [
+            r'title[:\s]*([^\n]{5,100})',
+            r'document\s*(?:name|title)[:\s]*([^\n]{5,100})',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, self.section_1_text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+
+        # Fallback: First line with significant text
+        lines = self.text.split('\n')
+        for line in lines[:10]:
+            line = line.strip()
+            if len(line) > 10 and line[0].isupper():
+                # Skip section markers
+                if not re.match(r'SECTION\s*\d', line, re.IGNORECASE):
+                    return line[:100]
+
+        return ""
+
+    def _extract_doc_type(self) -> str:
+        """Extract document type (SOP, POL, REC, etc.)."""
+        text_to_search = self.section_1_text + " " + self.text[:500]
+        text_upper = text_to_search.upper()
+
+        # Explicit type field
+        type_patterns = [
+            r'document\s*type[:\s]*(\w+)',
+            r'type[:\s]*(\w+)',
+            r'category[:\s]*(\w+)',
+        ]
+
+        for pattern in type_patterns:
+            match = re.search(pattern, text_to_search, re.IGNORECASE)
+            if match:
+                doc_type = match.group(1).upper()
+                if doc_type in VALID_DOC_TYPES:
+                    return doc_type
+
+        # Detect from content
+        type_keywords = {
+            'SOP': ['standard operating procedure', 'sop', 'procedure'],
+            'POL': ['policy', 'food safety policy'],
+            'REC': ['record', 'form', 'checklist', 'log'],
+            'PF': ['process flow', 'flowchart', 'flow diagram'],
+            'WI': ['work instruction', 'instruction'],
+            'SPEC': ['specification', 'spec'],
+            'PLAN': ['haccp plan', 'food safety plan', 'plan'],
+            'MAN': ['manual', 'handbook'],
+        }
+
+        for doc_type, keywords in type_keywords.items():
+            for kw in keywords:
+                if kw in text_to_search.lower():
+                    return doc_type
+
+        return "SOP"  # Default
+
+    def _extract_department(self) -> str:
+        """Extract department from valid list."""
+        text_to_search = self.section_1_text
+
+        # Explicit department field
+        dept_patterns = [
+            r'department[:\s]*([^\n,;|]{2,30})',
+            r'dept\.?[:\s]*([^\n,;|]{2,30})',
+            r'division[:\s]*([^\n,;|]{2,30})',
+        ]
+
+        for pattern in dept_patterns:
+            match = re.search(pattern, text_to_search, re.IGNORECASE)
+            if match:
+                dept_text = match.group(1).strip()
+                # Match to valid departments
+                for valid_dept in VALID_DEPARTMENTS:
+                    if valid_dept.lower() in dept_text.lower():
+                        return valid_dept
+
+        # Detect from content mentions
+        dept_counts = {}
+        for dept in VALID_DEPARTMENTS:
+            count = len(re.findall(dept, self.text, re.IGNORECASE))
+            if count > 0:
+                dept_counts[dept] = count
+
+        if dept_counts:
+            return max(dept_counts, key=dept_counts.get)
+
+        return "Quality"  # Default for FSMS documents
+
+    def _extract_field(self, patterns: list) -> str:
+        """Extract a field using multiple regex patterns."""
+        for pattern in patterns:
+            match = re.search(pattern, self.section_1_text, re.IGNORECASE)
+            if match:
+                value = match.group(1).strip()
+                # Clean up common artifacts
+                value = re.sub(r'\s+', ' ', value)
+                value = value.strip('_\t ')
+                if value and len(value) > 1:
+                    return value
+        return ""
+
+    def _extract_version(self) -> str:
+        """Extract version number."""
+        patterns = [
+            r'version[:\s]*(v?\d+\.?\d*)',
+            r'rev(?:ision)?[:\s]*(v?\d+\.?\d*)',
+            r'\b(v\d+\.\d+)\b',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, self.section_1_text, re.IGNORECASE)
+            if match:
+                version = match.group(1)
+                if not version.startswith('v'):
+                    version = f"v{version}"
+                # Ensure format v1.0
+                if re.match(r'^v\d+$', version):
+                    version = f"{version}.0"
+                return version
+
+        return "v0.1"  # Default for new documents
+
+    def _extract_date(self, date_type: str) -> str:
+        """Extract effective or review date."""
+        date_pattern = r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{2}[/-]\d{2}'
+
+        if date_type == 'effective':
+            patterns = [
+                rf'effective\s*(?:date)?[:\s]*({date_pattern})',
+                rf'date\s*of\s*issue[:\s]*({date_pattern})',
+                rf'issued?[:\s]*({date_pattern})',
+            ]
+        else:
+            patterns = [
+                rf'(?:next\s*)?review\s*(?:date)?[:\s]*({date_pattern})',
+                rf'review\s*by[:\s]*({date_pattern})',
+            ]
+
+        for pattern in patterns:
+            match = re.search(pattern, self.section_1_text, re.IGNORECASE)
+            if match:
+                return match.group(1)
+
+        return ""
 
 
 # ============================================================================
@@ -136,12 +435,12 @@ def classify_document(text: str) -> tuple[str, float]:
 
 
 # ============================================================================
-# Metadata Extraction
+# Metadata Extraction (Legacy wrapper - uses MetadataExtractor)
 # ============================================================================
 
 def extract_metadata(text: str) -> DocumentMetadata:
     """
-    Extract document metadata from text.
+    Extract document metadata from text using MetadataExtractor.
 
     Args:
         text: Document text
@@ -149,60 +448,194 @@ def extract_metadata(text: str) -> DocumentMetadata:
     Returns:
         DocumentMetadata object
     """
-    metadata = DocumentMetadata()
+    extractor = MetadataExtractor(text)
+    return extractor.extract()
 
-    # Title extraction (usually first non-empty line or after "Title:")
-    title_match = re.search(r'(?:title:?\s*|^)([A-Z][^\n]{5,100})', text, re.MULTILINE | re.IGNORECASE)
-    if title_match:
-        metadata.title = title_match.group(1).strip()
 
-    # Prepared By
-    prep_match = re.search(r'prepared\s*(?:by)?:?\s*([^\n,;]{2,50})', text, re.IGNORECASE)
-    if prep_match:
-        metadata.prepared_by = prep_match.group(1).strip()
+# ============================================================================
+# Rice Hazard Validation (Golden Template SECTION 4)
+# ============================================================================
 
-    # Approved By
-    appr_match = re.search(r'approved\s*(?:by)?:?\s*([^\n,;]{2,50})', text, re.IGNORECASE)
-    if appr_match:
-        metadata.approved_by = appr_match.group(1).strip()
+def validate_rice_hazards_section_4(text: str) -> list:
+    """
+    Validate SECTION 4 (Hazard Control) for rice-specific hazards.
 
-    # Record Keeper / Document Controller
-    keeper_match = re.search(r'(?:record\s*keeper|document\s*control(?:ler)?):?\s*([^\n,;]{2,50})', text, re.IGNORECASE)
-    if keeper_match:
-        metadata.record_keeper = keeper_match.group(1).strip()
+    Rule: If Moisture, Aflatoxin, or Metal is mentioned without a numerical
+    threshold, flag as 'High Severity' gap.
 
-    # Department
-    dept_match = re.search(r'department:?\s*([^\n,;]{2,30})', text, re.IGNORECASE)
-    if dept_match:
-        metadata.department = dept_match.group(1).strip()
+    Args:
+        text: Full document text
+
+    Returns:
+        List of hazard gap dictionaries
+    """
+    hazard_gaps = []
+
+    # Extract SECTION 4 content
+    section_4_patterns = [
+        r'SECTION\s*4[:\s]*HAZARD\s*CONTROL',
+        r'4\.0?\s*HAZARD',
+        r'HAZARD\s*(?:CONTROL|ANALYSIS|IDENTIFICATION)',
+    ]
+
+    section_5_patterns = [
+        r'SECTION\s*5',
+        r'5\.0?\s*[A-Z]',
+    ]
+
+    # Find SECTION 4
+    section_4_start = 0
+    for pattern in section_4_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            section_4_start = match.start()
+            break
+
+    # Find end (SECTION 5 or end of document)
+    section_4_end = len(text)
+    for pattern in section_5_patterns:
+        match = re.search(pattern, text[section_4_start:], re.IGNORECASE)
+        if match:
+            section_4_end = section_4_start + match.start()
+            break
+
+    # Use entire document if no SECTION 4 found
+    if section_4_start == 0:
+        section_4_text = text
     else:
-        # Try to detect from content
-        departments = ["Milling", "Quality", "Exports", "Packaging", "Storage"]
-        for dept in departments:
-            if dept.lower() in text.lower():
-                metadata.department = dept
-                break
+        section_4_text = text[section_4_start:section_4_end]
 
-    # Version
-    ver_match = re.search(r'(?:version|rev|revision):?\s*(v?\d+\.?\d*)', text, re.IGNORECASE)
-    if ver_match:
-        version = ver_match.group(1)
-        if not version.startswith('v'):
-            version = f"v{version}"
-        metadata.version = version
+    section_4_lower = section_4_text.lower()
 
-    # Dates
-    date_pattern = r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{2}[/-]\d{2}'
+    # Rice-specific hazards requiring numerical thresholds
+    critical_hazards = {
+        'moisture': {
+            'keywords': ['moisture', 'moisture content', 'mc'],
+            'threshold_patterns': [
+                r'moisture[^.]*?(\d+\.?\d*\s*%)',
+                r'mc[^.]*?(\d+\.?\d*\s*%)',
+                r'≤?\s*14\s*%',
+                r'<\s*14\s*%',
+            ],
+            'expected': '≤14%',
+            'risk': 'Mold growth, aflatoxin production'
+        },
+        'aflatoxin': {
+            'keywords': ['aflatoxin', 'mycotoxin', 'aflatoxin b1'],
+            'threshold_patterns': [
+                r'aflatoxin[^.]*?(\d+\.?\d*\s*(?:ppb|ppm|µg/kg))',
+                r'(\d+\.?\d*\s*(?:ppb|ppm))[^.]*?aflatoxin',
+                r'≤?\s*10\s*ppb',
+                r'<\s*10\s*ppb',
+            ],
+            'expected': '≤10 ppb (or ≤4 ppb for EU)',
+            'risk': 'Carcinogenic mycotoxin, export rejection'
+        },
+        'metal': {
+            'keywords': ['metal', 'metal fragment', 'metal detection', 'metal detector'],
+            'threshold_patterns': [
+                r'metal[^.]*?(\d+\.?\d*\s*(?:mm|cm))',
+                r'(\d+\.?\d*\s*mm)[^.]*?metal',
+                r'ferrous[^.]*?(\d+\.?\d*\s*mm)',
+                r'non-ferrous[^.]*?(\d+\.?\d*\s*mm)',
+            ],
+            'expected': 'Ferrous: ≤1.5mm, Non-ferrous: ≤2.0mm, Stainless: ≤2.5mm',
+            'risk': 'Physical contamination, consumer injury'
+        },
+    }
 
-    eff_match = re.search(rf'effective\s*(?:date)?:?\s*({date_pattern})', text, re.IGNORECASE)
-    if eff_match:
-        metadata.effective_date = eff_match.group(1)
+    for hazard_type, config in critical_hazards.items():
+        # Check if hazard is mentioned
+        hazard_mentioned = any(kw in section_4_lower for kw in config['keywords'])
 
-    rev_match = re.search(rf'(?:review|next\s*review)\s*(?:date)?:?\s*({date_pattern})', text, re.IGNORECASE)
-    if rev_match:
-        metadata.review_date = rev_match.group(1)
+        if hazard_mentioned:
+            # Check if numerical threshold is present
+            has_threshold = False
+            for pattern in config['threshold_patterns']:
+                if re.search(pattern, section_4_text, re.IGNORECASE):
+                    has_threshold = True
+                    break
 
-    return metadata
+            if not has_threshold:
+                hazard_gaps.append({
+                    'hazard': hazard_type.title(),
+                    'severity': 'High',
+                    'issue': f'{hazard_type.title()} mentioned without numerical threshold',
+                    'expected_threshold': config['expected'],
+                    'risk': config['risk'],
+                    'suggestion': f'Add critical limit for {hazard_type}: {config["expected"]}',
+                    'iso_clause': '8.5.1.2'
+                })
+
+    return hazard_gaps
+
+
+# ============================================================================
+# Audit Sync Validation
+# ============================================================================
+
+def validate_audit_sync(
+    extracted_metadata: DocumentMetadata,
+    db_metadata: dict = None
+) -> tuple[bool, list]:
+    """
+    Cross-verify document text metadata against database metadata.
+
+    Rule: If 'Approved By' in document doesn't match database value,
+    trigger 'Blocking Gap' and set Compliance Score to 0%.
+
+    Args:
+        extracted_metadata: Metadata extracted from document text
+        db_metadata: Metadata from database (optional for new documents)
+
+    Returns:
+        Tuple of (is_valid, list of error messages)
+    """
+    errors = []
+
+    if db_metadata is None:
+        # New document - no sync needed
+        return True, []
+
+    # Critical field: Approved By must match
+    db_approved_by = db_metadata.get('approved_by', '').strip().lower()
+    doc_approved_by = extracted_metadata.approved_by.strip().lower()
+
+    if db_approved_by and doc_approved_by:
+        # Both have values - must match
+        if db_approved_by != doc_approved_by:
+            errors.append({
+                'field': 'approved_by',
+                'severity': 'Blocking',
+                'document_value': extracted_metadata.approved_by,
+                'database_value': db_metadata.get('approved_by'),
+                'message': f"BLOCKING GAP: 'Approved By' mismatch. Document: '{extracted_metadata.approved_by}' vs Database: '{db_metadata.get('approved_by')}'"
+            })
+
+    # Other fields - warning only
+    field_checks = [
+        ('prepared_by', 'Prepared By'),
+        ('department', 'Department'),
+        ('record_keeper', 'Record Keeper'),
+    ]
+
+    for field_key, field_name in field_checks:
+        db_value = db_metadata.get(field_key, '').strip().lower()
+        doc_value = getattr(extracted_metadata, field_key, '').strip().lower()
+
+        if db_value and doc_value and db_value != doc_value:
+            errors.append({
+                'field': field_key,
+                'severity': 'Warning',
+                'document_value': getattr(extracted_metadata, field_key),
+                'database_value': db_metadata.get(field_key),
+                'message': f"Warning: '{field_name}' mismatch. Document: '{getattr(extracted_metadata, field_key)}' vs Database: '{db_metadata.get(field_key)}'"
+            })
+
+    # Check if any blocking errors
+    has_blocking = any(e['severity'] == 'Blocking' for e in errors)
+
+    return not has_blocking, errors
 
 
 # ============================================================================
@@ -413,13 +846,18 @@ def generate_suggestions(missing_elements: list, doc_type: str) -> list:
 # Main Analysis Function
 # ============================================================================
 
-def analyze_document(file_path: str, text: str) -> GapAnalysisResult:
+def analyze_document(
+    file_path: str,
+    text: str,
+    db_metadata: dict = None
+) -> GapAnalysisResult:
     """
     Perform complete gap analysis on a document.
 
     Args:
         file_path: Path to the document file
         text: Extracted document text
+        db_metadata: Optional metadata from database for audit sync validation
 
     Returns:
         GapAnalysisResult object
@@ -427,8 +865,23 @@ def analyze_document(file_path: str, text: str) -> GapAnalysisResult:
     # Classify document
     doc_type, confidence = classify_document(text)
 
-    # Extract metadata
+    # Extract metadata using MetadataExtractor (Golden Template SECTION 1)
     metadata = extract_metadata(text)
+
+    # Override doc_type from metadata if extracted
+    if metadata.doc_type:
+        # Map internal doc_type to classification type for compatibility
+        type_mapping = {
+            'SOP': 'SOP',
+            'POL': 'POLICY',
+            'REC': 'RECORD',
+            'PF': 'PROCESS_FLOW',
+            'WI': 'SOP',
+            'SPEC': 'SOP',
+            'PLAN': 'SOP',
+            'MAN': 'POLICY',
+        }
+        doc_type = type_mapping.get(metadata.doc_type, doc_type)
 
     # Check required elements
     present, missing = check_required_elements(text, doc_type, metadata)
@@ -436,14 +889,41 @@ def analyze_document(file_path: str, text: str) -> GapAnalysisResult:
     # Calculate compliance score
     score = calculate_compliance_score(present, missing)
 
-    # Get blocking gaps
+    # Get blocking gaps from missing elements
     blocking = get_blocking_gaps(missing)
 
     # Check rice mill hazards
     hazards = check_rice_mill_hazards(text)
 
+    # Validate rice hazards in SECTION 4 (High Severity gaps)
+    hazard_gaps = validate_rice_hazards_section_4(text)
+
+    # Add hazard gaps to missing elements with High severity
+    for gap in hazard_gaps:
+        missing.append((gap['issue'], gap['iso_clause'], 'High'))
+
+    # Audit Sync Validation
+    audit_sync_valid, audit_sync_errors = validate_audit_sync(metadata, db_metadata)
+
+    # If audit sync fails (Approved By mismatch), set compliance to 0% and block
+    if not audit_sync_valid:
+        score = 0.0
+        for error in audit_sync_errors:
+            if error['severity'] == 'Blocking':
+                blocking.append((error['message'], '7.5.3', 'Blocking'))
+
     # Generate suggestions
     suggestions = generate_suggestions(missing, doc_type)
+
+    # Add hazard gap suggestions
+    for gap in hazard_gaps:
+        suggestions.append({
+            'element': gap['hazard'],
+            'clause': gap['iso_clause'],
+            'severity': gap['severity'],
+            'suggestion': gap['suggestion'],
+            'example': f"Critical Limit: {gap['expected_threshold']}"
+        })
 
     return GapAnalysisResult(
         file_path=file_path,
@@ -456,8 +936,11 @@ def analyze_document(file_path: str, text: str) -> GapAnalysisResult:
         hazards_found=hazards,
         metadata=metadata,
         blocking_gaps=blocking,
-        is_blocked=len(blocking) > 0,
-        suggestions=suggestions
+        is_blocked=len(blocking) > 0 or not audit_sync_valid,
+        suggestions=suggestions,
+        audit_sync_valid=audit_sync_valid,
+        audit_sync_errors=audit_sync_errors,
+        hazard_gaps=hazard_gaps
     )
 
 
@@ -571,40 +1054,48 @@ Document meets all requirements. Ready to create Draft record in FSMS.
 # API Integration
 # ============================================================================
 
-async def create_draft_record(result: GapAnalysisResult, api_base: str = "http://localhost:8000") -> dict:
+async def create_draft_record(
+    result: GapAnalysisResult,
+    api_base: str = "http://localhost:8000"
+) -> dict:
     """
     Create a Draft document record via FastAPI endpoint.
+
+    Uses extracted metadata from Golden Template SECTION 1 to auto-fill
+    the database record. System generates the doc_id automatically based
+    on department and doc_type.
 
     Args:
         result: GapAnalysisResult object
         api_base: Base URL for the API
 
     Returns:
-        API response dictionary
+        API response dictionary with auto-generated doc_id
     """
-    # Generate doc_id based on document type
-    doc_type_prefix = {
+    # Map document classification type to doc_type code
+    doc_type_mapping = {
         "POLICY": "POL",
         "SOP": "SOP",
         "PROCESS_FLOW": "PF",
         "RECORD": "REC"
     }
-    prefix = doc_type_prefix.get(result.document_type, "DOC")
 
-    # Get next number (would normally query DB)
-    doc_id = f"FSMS-{prefix}-{datetime.now().strftime('%Y%m%d%H%M')}"
+    # Use extracted doc_type from metadata, or map from classification
+    doc_type = result.metadata.doc_type or doc_type_mapping.get(result.document_type, "SOP")
 
     # Collect ISO clauses from present elements
     iso_clauses = list(set(clause for _, clause, _ in result.present_elements))
 
+    # Build payload using extracted metadata - NO doc_id (system generates it)
     payload = {
-        "doc_id": doc_id,
+        # doc_id is NOT included - system auto-generates based on dept + type
+        "doc_type": doc_type,
         "title": result.metadata.title or result.file_name,
         "department": result.metadata.department or "Quality",
         "version": result.metadata.version or "v0.1",
-        "prepared_by": result.metadata.prepared_by or "To be assigned",
-        "approved_by": result.metadata.approved_by or "To be assigned",
-        "record_keeper": result.metadata.record_keeper or "Document Control",
+        "prepared_by": result.metadata.prepared_by or "",
+        "approved_by": result.metadata.approved_by or "",
+        "record_keeper": result.metadata.record_keeper or "",
         "iso_clauses": iso_clauses,
         "file_path": result.file_path
     }
@@ -612,6 +1103,65 @@ async def create_draft_record(result: GapAnalysisResult, api_base: str = "http:/
     async with httpx.AsyncClient() as client:
         response = await client.post(f"{api_base}/documents", json=payload)
         return response.json()
+
+
+async def create_draft_from_file(
+    file_path: str,
+    text: str,
+    api_base: str = "http://localhost:8000"
+) -> dict:
+    """
+    Convenience function to analyze a file and create a Draft record.
+
+    Combines gap analysis with automatic Draft creation using
+    extracted metadata from Golden Template.
+
+    Args:
+        file_path: Path to the document file
+        text: Extracted document text
+        api_base: Base URL for the API
+
+    Returns:
+        Dictionary with analysis result and API response
+    """
+    # Analyze document
+    result = analyze_document(file_path, text)
+
+    # Check if document passes minimum requirements
+    if result.is_blocked:
+        return {
+            "success": False,
+            "error": "Document has blocking gaps",
+            "blocking_gaps": result.blocking_gaps,
+            "compliance_score": result.compliance_score,
+            "analysis": result
+        }
+
+    # Create Draft record with auto-generated ID
+    try:
+        api_response = await create_draft_record(result, api_base)
+        return {
+            "success": True,
+            "doc_id": api_response.get("doc_id"),
+            "document_id": api_response.get("id"),
+            "metadata_extracted": {
+                "title": result.metadata.title,
+                "department": result.metadata.department,
+                "doc_type": result.metadata.doc_type,
+                "prepared_by": result.metadata.prepared_by,
+                "approved_by": result.metadata.approved_by,
+                "record_keeper": result.metadata.record_keeper,
+                "extraction_confidence": result.metadata.extraction_confidence
+            },
+            "compliance_score": result.compliance_score,
+            "api_response": api_response
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "analysis": result
+        }
 
 
 # ============================================================================
